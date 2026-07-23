@@ -14,6 +14,8 @@ Download a complete Overleaf project for local AI-assisted drafting, then replay
 - remote file opening and Reviewing-mode setup;
 - exact single or batch tracked replacements;
 - dry-run by default, unique-anchor checks, and collaborator drift protection;
+- fast prepared-editor sync that reuses the open file, browser connection, and Reviewing check;
+- per-write tracked-suggestion verification that does not mistake older suggestions for the new edit;
 - an Agent Skill for Codex and other AgentSkills-compatible agents.
 
 ## Install for Codex
@@ -91,13 +93,13 @@ The Codex in-app browser and the MCP-managed Chrome profile are separate browser
 Create an immutable timestamped snapshot under a parent directory:
 
 ```powershell
-overleaf-tracked-changes-mcp snapshot "D:\Paper\urbanvlm2vec-snapshots"
+overleaf-tracked-changes-mcp snapshot "D:\Paper\overleaf-snapshots"
 ```
 
 Or choose a new folder name:
 
 ```powershell
-overleaf-tracked-changes-mcp snapshot "D:\Paper\urbanvlm2vec-snapshots" baseline-2026-07-23
+overleaf-tracked-changes-mcp snapshot "D:\Paper\overleaf-snapshots" baseline-2026-07-23
 ```
 
 The command downloads Overleaf's complete Source ZIP through the authenticated browser session, validates the archive, and extracts it into a new directory. It refuses an existing destination and never propagates deletions or overwrites local files.
@@ -125,6 +127,8 @@ Snapshots are for reading, baselines, and local drafting. Do not send the comple
 6. Re-read the editor and confirm Overleaf shows suggestions attributed to the intended account.
 
 Before every sync, the MCP reads the live Overleaf file. It does not replace the original baseline. The baseline preserves local intent while the live file supplies the current collaboration state.
+
+`sync_local_file_tracked` prepares the target editor, checks Reviewing, and reads the live file in one browser pass. Agents should call this combined tool directly instead of separately calling status, open-file, Reviewing, and read tools before every sync. Newly generated LaTeX build artifacts such as `.aux`, `.log`, `.fls`, and `.synctex.gz` are reported as ignored rather than manuscript changes. A `.bbl` already present in the baseline remains trackable for submission workflows.
 
 Here, **sync** means replaying verified text hunks through Overleaf Reviewing. It never means uploading the working file. New files, deleted files, and binary files are not propagated by local tracked sync.
 
@@ -159,7 +163,7 @@ The local working copy may contain the complete project, but it is never uploade
 - `download_project_snapshot`: download and extract the complete project into a new local snapshot.
 - `open_overleaf_file`: open a file visible in the expanded Overleaf file tree.
 - `ensure_reviewing`: switch the open editor from Editing to Reviewing and verify it.
-- `list_local_changes`: identify modified, added, deleted, and unsupported files across baseline and working trees.
+- `list_local_changes`: identify modified, added, deleted, unsupported, and ignored LaTeX build artifacts across baseline and working trees.
 - `plan_local_file_changes`: compare one baseline file with its local working copy without accessing Overleaf.
 - `sync_local_file_tracked`: three-way rebase one local file against current Overleaf, then dry-run or replay safe hunks as suggestions; partial conflict-free application is explicit opt-in.
 - `read_project_tree`: inspect a local snapshot or working tree.
@@ -206,6 +210,14 @@ node dist/src/index.js --help
 - Reviewing detection and CodeMirror access depend on Overleaf's current web UI.
 - The server does not accept or reject suggestions and does not yet add comments.
 - Never commit or share the managed browser profile.
+
+## Version 0.4.1
+
+- Removes the 15-second false wait caused by treating the selected File tree tab as the open manuscript file.
+- Reuses one prepared browser/editor state during local tracked sync.
+- Verifies that the tracked-change DOM changed during this write, rather than accepting any older suggestion as proof.
+- Uses one persistent-profile path across CLI and MCP launch modes.
+- Filters generated LaTeX build artifacts from local change plans.
 
 ## License
 

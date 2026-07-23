@@ -1,6 +1,6 @@
 {
   "name": "overleaf-tracked-changes-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "MCP server for safe paragraph-scale Overleaf edits through tracked browser changes.",
   "repository": {
     "type": "git",

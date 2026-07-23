@@ -6,6 +6,10 @@ export interface LocalTreeChanges {
         path: string;
         reason: 'unsupported_type' | 'too_large';
     }>;
+    ignored: Array<{
+        path: string;
+        reason: 'latex_build_artifact';
+    }>;
 }
 export interface LocalFilePlannedEdit {
     expectedText: string;

@@ -19,11 +19,11 @@ test('Overleaf login and auth callback pages are not authenticated destinations'
 
 test('an Overleaf project page without a login link is authenticated', () => {
   assert.equal(isAuthenticatedOverleafPage(
-    'https://www.overleaf.com/project/6a5df5255f92e372a5b007dd',
+    'https://www.overleaf.com/project/0123456789abcdef01234567',
     false,
   ), true);
   assert.equal(isAuthenticatedOverleafPage(
-    'https://www.overleaf.com/project/6a5df5255f92e372a5b007dd',
+    'https://www.overleaf.com/project/0123456789abcdef01234567',
     true,
   ), false);
 });

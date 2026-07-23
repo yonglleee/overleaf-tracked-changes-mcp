@@ -34,7 +34,7 @@ Never request passwords, copied cookies, session tokens, or browser-profile file
 6. If the changed files are not known, call `list_local_changes` first. Report added, deleted, and skipped files but do not propagate them.
 7. Call `plan_local_file_changes`, or call `sync_local_file_tracked` directly with `dry_run: true`, for each modified existing text file. The sync tool must compare baseline, working copy, and current remote text.
 8. Review safe changes, already-applied changes, and conflicts, and confirm the correct local path.
-9. Open the matching live remote file and verify Reviewing.
+9. Let `sync_local_file_tracked` open the matching file, verify Reviewing, and read the live editor in one prepared pass. Do not prepend separate status, open-file, Reviewing, and read calls unless diagnosing a failure.
 10. Repeat `sync_local_file_tracked` with `dry_run: false` only after the plan is confirmed. Keep `allow_partial: false` unless the user explicitly approves applying only the conflict-free changes.
 11. Re-read the remote editor and verify tracked insertions/deletions.
 
@@ -43,6 +43,8 @@ Automatically rebase non-overlapping word-level changes, including different wor
 For true conflicts, present the local and remote variants, obtain or draft an explicit merged wording, update the working copy, and apply the resolved paragraph through a dry-run tracked replacement. Do not automatically refresh the baseline while suggestions are pending. Download a fresh immutable snapshot after suggestions are accepted or rejected and before the next editing round.
 
 Local tracked sync supports modified existing text files only. Do not propagate new files, deleted files, binary files, or whole-directory deletions. Handle each changed file separately so one drifting file does not affect another.
+
+Ignore generated LaTeX build artifacts reported by `list_local_changes`. A `.bbl` already present in the immutable baseline may be revised and synced as text, but a newly generated `.bbl` is ignored.
 
 ## Browser lifecycle
 

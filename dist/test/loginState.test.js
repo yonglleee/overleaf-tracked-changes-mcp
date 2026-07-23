@@ -9,7 +9,7 @@ test('Overleaf login and auth callback pages are not authenticated destinations'
     assert.equal(isAuthenticatedOverleafPage('https://www.overleaf.com/users/auth/google_oauth2/callback', false), false);
 });
 test('an Overleaf project page without a login link is authenticated', () => {
-    assert.equal(isAuthenticatedOverleafPage('https://www.overleaf.com/project/6a5df5255f92e372a5b007dd', false), true);
-    assert.equal(isAuthenticatedOverleafPage('https://www.overleaf.com/project/6a5df5255f92e372a5b007dd', true), false);
+    assert.equal(isAuthenticatedOverleafPage('https://www.overleaf.com/project/0123456789abcdef01234567', false), true);
+    assert.equal(isAuthenticatedOverleafPage('https://www.overleaf.com/project/0123456789abcdef01234567', true), false);
 });
 //# sourceMappingURL=loginState.test.js.map

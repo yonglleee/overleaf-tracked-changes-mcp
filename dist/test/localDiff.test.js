@@ -110,6 +110,39 @@ test('listLocalChanges separates modified files from additions and deletions', a
             added: ['added.tex'],
             deleted: ['deleted.tex'],
             skipped: [],
+            ignored: [],
+        });
+    }
+    finally {
+        await fs.rm(root, { recursive: true, force: true });
+    }
+});
+test('listLocalChanges ignores generated LaTeX artifacts but preserves tracked bbl files', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'overleaf-local-artifacts-test-'));
+    const baseline = path.join(root, 'baseline');
+    const working = path.join(root, 'working');
+    await fs.mkdir(baseline);
+    await fs.mkdir(working);
+    try {
+        await Promise.all([
+            fs.writeFile(path.join(working, 'manuscript.aux'), 'generated\n'),
+            fs.writeFile(path.join(working, 'manuscript.log'), 'generated\n'),
+            fs.writeFile(path.join(working, 'manuscript.synctex.gz'), 'generated\n'),
+            fs.writeFile(path.join(working, 'manuscript.bbl'), 'new generated bbl\n'),
+            fs.writeFile(path.join(baseline, 'submission.bbl'), 'old bbl\n'),
+            fs.writeFile(path.join(working, 'submission.bbl'), 'updated bbl\n'),
+        ]);
+        assert.deepEqual(await listLocalChanges(baseline, working), {
+            modified: ['submission.bbl'],
+            added: [],
+            deleted: [],
+            skipped: [],
+            ignored: [
+                { path: 'manuscript.aux', reason: 'latex_build_artifact' },
+                { path: 'manuscript.bbl', reason: 'latex_build_artifact' },
+                { path: 'manuscript.log', reason: 'latex_build_artifact' },
+                { path: 'manuscript.synctex.gz', reason: 'latex_build_artifact' },
+            ],
         });
     }
     finally {

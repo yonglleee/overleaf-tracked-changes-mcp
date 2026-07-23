@@ -1,5 +1,5 @@
 import { diffWordsWithSpace, structuredPatch } from 'diff';
-import { isSupportedTextFile, readLocalFile, readProjectTree, } from './localProject.js';
+import { isSupportedTextFile, isLatexBuildArtifact, readLocalFile, readProjectTree, } from './localProject.js';
 import { countOccurrences } from './textPatch.js';
 export function normalizeLineEndings(text) {
     return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -12,10 +12,14 @@ export async function listLocalChanges(baselineRoot, workingRoot, maxEntries = 5
     const baselineFiles = new Map(baselineTree.filter((entry) => entry.type === 'file').map((entry) => [entry.path, entry]));
     const workingFiles = new Map(workingTree.filter((entry) => entry.type === 'file').map((entry) => [entry.path, entry]));
     const paths = Array.from(new Set([...baselineFiles.keys(), ...workingFiles.keys()])).sort();
-    const result = { modified: [], added: [], deleted: [], skipped: [] };
+    const result = { modified: [], added: [], deleted: [], skipped: [], ignored: [] };
     for (const filePath of paths) {
         const baseline = baselineFiles.get(filePath);
         const working = workingFiles.get(filePath);
+        if (isLatexBuildArtifact(filePath, Boolean(baseline))) {
+            result.ignored.push({ path: filePath, reason: 'latex_build_artifact' });
+            continue;
+        }
         if (!baseline) {
             result.added.push(filePath);
             continue;

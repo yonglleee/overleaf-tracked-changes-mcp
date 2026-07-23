@@ -12,8 +12,8 @@ import {
 
 test('projectIdFromUrl extracts an Overleaf project ID', () => {
   assert.equal(
-    projectIdFromUrl('https://www.overleaf.com/project/6a5df5255f92e372a5b007dd'),
-    '6a5df5255f92e372a5b007dd',
+    projectIdFromUrl('https://www.overleaf.com/project/0123456789abcdef01234567'),
+    '0123456789abcdef01234567',
   );
   assert.throws(() => projectIdFromUrl('https://example.com/project/abc'));
 });

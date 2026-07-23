@@ -19,13 +19,13 @@ Snapshots are immutable baselines. They are not live synchronization and are nev
 The write path is:
 
 1. Launch a persistent managed Chrome profile or connect to external Chrome over CDP.
-2. Open the requested file and verify Reviewing.
-3. Read the current remote CodeMirror document.
+2. Reuse the requested file when it is already open; otherwise select it without waiting on unrelated navigation tabs.
+3. Verify Reviewing and read the current remote CodeMirror document from the same prepared page.
 4. Require each `expected_text` to be exact and unique.
 5. Default to dry-run and reject overlapping actual write ranges. Unique anchor contexts may overlap.
 6. Remove common prefix and suffix text to minimize the dispatched range.
 7. Dispatch up to 40 independent changes in one transaction.
-8. Read the document back and verify every replacement.
+8. Compare tracked-change DOM snapshots from immediately before and after dispatch, then read the document back and verify every replacement.
 
 ## Browser surfaces
 
@@ -45,7 +45,7 @@ Safe local-to-Overleaf revision uses a live three-way rebase:
 
 The immutable baseline records local intent; it is not replaced before sync. The live remote editor supplies current collaboration state. Automatic baseline refresh is intentionally avoided while tracked suggestions are pending because later acceptance or rejection can change the authoritative text.
 
-`list_local_changes` inventories the baseline and working trees without touching Overleaf. `plan_local_file_changes` creates local-only hunks for one existing text file. `sync_local_file_tracked` composes the live three-way plan, remote file selection, Reviewing verification, conflict policy, and tracked batch dispatcher. File creation, file deletion, and binary synchronization are deliberately excluded.
+`list_local_changes` inventories the baseline and working trees without touching Overleaf. Generated LaTeX build outputs are ignored; a `.bbl` that already belongs to the baseline remains trackable. `plan_local_file_changes` creates local-only hunks for one existing text file. `sync_local_file_tracked` composes one prepared-editor pass, the live three-way plan, remote file selection, Reviewing verification, conflict policy, and tracked batch dispatcher. File creation, file deletion, and binary synchronization are deliberately excluded.
 
 ## Current limitations
 

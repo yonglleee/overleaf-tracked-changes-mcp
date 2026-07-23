@@ -1,6 +1,7 @@
 import { diffWordsWithSpace, structuredPatch } from 'diff';
 import {
   isSupportedTextFile,
+  isLatexBuildArtifact,
   readLocalFile,
   readProjectTree,
 } from './localProject.js';
@@ -11,6 +12,7 @@ export interface LocalTreeChanges {
   added: string[];
   deleted: string[];
   skipped: Array<{ path: string; reason: 'unsupported_type' | 'too_large' }>;
+  ignored: Array<{ path: string; reason: 'latex_build_artifact' }>;
 }
 
 export interface LocalFilePlannedEdit {
@@ -87,11 +89,15 @@ export async function listLocalChanges(
     workingTree.filter((entry) => entry.type === 'file').map((entry) => [entry.path, entry]),
   );
   const paths = Array.from(new Set([...baselineFiles.keys(), ...workingFiles.keys()])).sort();
-  const result: LocalTreeChanges = { modified: [], added: [], deleted: [], skipped: [] };
+  const result: LocalTreeChanges = { modified: [], added: [], deleted: [], skipped: [], ignored: [] };
 
   for (const filePath of paths) {
     const baseline = baselineFiles.get(filePath);
     const working = workingFiles.get(filePath);
+    if (isLatexBuildArtifact(filePath, Boolean(baseline))) {
+      result.ignored.push({ path: filePath, reason: 'latex_build_artifact' });
+      continue;
+    }
     if (!baseline) {
       result.added.push(filePath);
       continue;

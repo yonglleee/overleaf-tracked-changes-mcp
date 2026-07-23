@@ -17,6 +17,10 @@ export interface OpenProjectFileInput {
     projectUrl?: string;
     ensureReviewing?: boolean;
 }
+export interface PreparedProjectFile {
+    status: OverleafStatus;
+    text: string;
+}
 export interface DownloadProjectSnapshotInput {
     destinationRoot: string;
     snapshotName?: string;
@@ -46,6 +50,7 @@ export interface ReplaceTrackedBatchInput {
     maxReplacementChars?: number;
     maxEdits?: number;
     projectUrl?: string;
+    reviewingVerified?: boolean;
 }
 export interface ReplaceTrackedOutput {
     ok: boolean;
@@ -58,6 +63,8 @@ export interface ReplaceTrackedOutput {
         expectedStillPresent: boolean;
     };
     trackedSignal?: boolean;
+    trackedCountBefore?: number;
+    trackedCountAfter?: number;
 }
 export interface ReplaceTrackedBatchOutput {
     ok: boolean;
@@ -71,7 +78,15 @@ export interface ReplaceTrackedBatchOutput {
     }>;
     finalTextMatches?: boolean;
     trackedSignal?: boolean;
+    trackedCountBefore?: number;
+    trackedCountAfter?: number;
 }
+interface TrackedSnapshot {
+    count: number;
+    signature: string;
+}
+export declare function selectOpenFileName(labels: string[]): string | null;
+export declare function trackedSnapshotChanged(before: TrackedSnapshot, after: TrackedSnapshot): boolean;
 export declare function isAuthenticatedOverleafPage(urlValue: string, hasLoginLink: boolean): boolean;
 export declare class OverleafBrowserClient {
     private browser?;
@@ -83,17 +98,24 @@ export declare class OverleafBrowserClient {
     openLogin(): Promise<Page>;
     waitForLogin(timeoutMs?: number): Promise<Page>;
     private launchManagedContext;
+    private inspectPage;
+    private readEditorText;
+    private trackedSnapshot;
     readOpenEditorText(projectUrl?: string): Promise<string>;
     isReviewingLikelyEnabled(projectUrl?: string): Promise<boolean>;
+    private statusFromPage;
     status(projectUrl?: string): Promise<OverleafStatus>;
+    private ensureReviewingOnPage;
     ensureReviewing(projectUrl?: string): Promise<{
         ok: boolean;
         changed: boolean;
         status: OverleafStatus;
     }>;
+    prepareProjectFile(input: OpenProjectFileInput): Promise<PreparedProjectFile>;
     openProjectFile(input: OpenProjectFileInput): Promise<OverleafStatus>;
     downloadProjectSnapshot(input: DownloadProjectSnapshotInput): Promise<DownloadProjectSnapshotOutput>;
     replaceTextTracked(input: ReplaceTrackedInput): Promise<ReplaceTrackedOutput>;
     replaceTextsTracked(input: ReplaceTrackedBatchInput): Promise<ReplaceTrackedBatchOutput>;
 }
 export declare function browserProfileDirectory(): string;
+export {};

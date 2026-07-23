@@ -17,6 +17,7 @@ const DEFAULT_TEXT_EXTENSIONS = new Set([
   '.sty',
   '.cls',
   '.bst',
+  '.bbl',
   '.md',
   '.txt',
   '.csv',
@@ -27,6 +28,27 @@ const DEFAULT_TEXT_EXTENSIONS = new Set([
 
 export function isSupportedTextFile(relativePath: string): boolean {
   return DEFAULT_TEXT_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+}
+
+const LATEX_BUILD_SUFFIXES = [
+  '.aux',
+  '.blg',
+  '.log',
+  '.fls',
+  '.fdb_latexmk',
+  '.synctex.gz',
+  '.out',
+  '.toc',
+  '.lof',
+  '.lot',
+  '.run.xml',
+  '-blx.bib',
+];
+
+export function isLatexBuildArtifact(relativePath: string, existsInBaseline = false): boolean {
+  const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
+  if (normalized.endsWith('.bbl')) return !existsInBaseline;
+  return LATEX_BUILD_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
 export interface TreeEntry {

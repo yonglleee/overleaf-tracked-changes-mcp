@@ -1,4 +1,5 @@
 export declare function isSupportedTextFile(relativePath: string): boolean;
+export declare function isLatexBuildArtifact(relativePath: string, existsInBaseline?: boolean): boolean;
 export interface TreeEntry {
     path: string;
     type: 'file' | 'dir';

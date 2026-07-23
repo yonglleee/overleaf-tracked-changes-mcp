@@ -7,7 +7,7 @@ import { readLocalFile, readProjectTree, resolveLocalRoot, searchProject } from 
 import { OverleafBrowserClient } from './overleafBrowser.js';
 import { defaultCdpUrl, defaultPersistentProfileDirectory, ensurePersistentChrome, } from './persistentChrome.js';
 const browserClient = new OverleafBrowserClient();
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const tools = [
     {
         name: 'get_overleaf_status',
@@ -274,12 +274,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             const requireReviewing = args.require_reviewing !== false;
             const allowPartial = args.allow_partial === true;
-            const remoteStatus = await browserClient.openProjectFile({
+            const prepared = await browserClient.prepareProjectFile({
                 filePath: local.filePath,
                 projectUrl: args.project_url,
                 ensureReviewing: requireReviewing,
             });
-            const remoteText = await browserClient.readOpenEditorText(args.project_url);
+            const remoteStatus = prepared.status;
+            const remoteText = prepared.text;
             const [baselineText, workingText] = await Promise.all([
                 readLocalFile(local.baselineRoot, local.filePath, Number(args.max_bytes || 2_000_000)),
                 readLocalFile(local.workingRoot, local.filePath, Number(args.max_bytes || 2_000_000)),
@@ -317,6 +318,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 requireReviewing,
                 maxReplacementChars: Number(args.max_replacement_chars || 12_000),
                 maxEdits: Number(args.max_edits || 40),
+                reviewingVerified: !requireReviewing || remoteStatus.reviewing,
             });
             return textResult({
                 ok: remote.ok,

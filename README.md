@@ -15,16 +15,22 @@ Edit LaTeX locally with an AI agent, then replay selected changes into Overleaf 
 
 ## AI agent install (recommended)
 
-Install the Agent Skill from this GitHub repository:
+Install the Agent Skill for Codex at user scope:
+
+```bash
+npx skills add yonglleee/overleaf-tracked-changes-mcp --agent codex --skill overleaf-tracked-changes --global --yes
+```
+
+To choose another AgentSkills-compatible agent interactively, run:
 
 ```bash
 npx skills add yonglleee/overleaf-tracked-changes-mcp
 ```
 
-GitHub CLI users can install the same skill with:
+GitHub CLI users can install the Codex skill with:
 
 ```bash
-gh skill install yonglleee/overleaf-tracked-changes-mcp overleaf-tracked-changes --scope user
+gh skill install yonglleee/overleaf-tracked-changes-mcp overleaf-tracked-changes --agent codex --scope user
 ```
 
 Then install the MCP executable directly from GitHub until an npm package is published:

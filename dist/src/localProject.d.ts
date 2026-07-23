@@ -1,3 +1,4 @@
+export declare function isSupportedTextFile(relativePath: string): boolean;
 export interface TreeEntry {
     path: string;
     type: 'file' | 'dir';

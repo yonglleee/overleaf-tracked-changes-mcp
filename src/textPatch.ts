@@ -85,7 +85,8 @@ export function planExactReplacement(
     return { ok: false, reason: 'expected_text_not_found', count: 0 };
   }
 
-  if (replacementText.length > maxReplacementChars) {
+  const minimized = minimizeReplacement(expectedText, replacementText);
+  if (minimized.insert.length > maxReplacementChars) {
     return {
       ok: false,
       reason: 'replacement_too_large',
@@ -113,7 +114,6 @@ export function planExactReplacement(
     };
   }
 
-  const minimized = minimizeReplacement(expectedText, replacementText);
   const matchFrom = first;
   const matchTo = first + expectedText.length;
   const from = matchFrom + minimized.prefixLength;

@@ -22,6 +22,9 @@ const DEFAULT_TEXT_EXTENSIONS = new Set([
     '.yaml',
     '.yml',
 ]);
+export function isSupportedTextFile(relativePath) {
+    return DEFAULT_TEXT_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+}
 export function resolveLocalRoot(rootArg) {
     return path.resolve(rootArg || process.env.OVERLEAF_MCP_LOCAL_ROOT || process.cwd());
 }
@@ -79,8 +82,7 @@ export async function searchProject(root, query, maxMatches = 80) {
             break;
         if (entry.type !== 'file')
             continue;
-        const ext = path.extname(entry.path).toLowerCase();
-        if (!DEFAULT_TEXT_EXTENSIONS.has(ext))
+        if (!isSupportedTextFile(entry.path))
             continue;
         if ((entry.bytes || 0) > 500_000)
             continue;

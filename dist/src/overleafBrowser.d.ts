@@ -1,4 +1,32 @@
 import { type Page } from 'playwright';
+import { type ProjectSnapshotOutput } from './projectSnapshot.js';
+export interface OverleafStatus {
+    ok: boolean;
+    browserMode: 'managed-profile' | 'external-cdp';
+    profile: string | null;
+    loggedIn: boolean;
+    onProject: boolean;
+    accessDenied: boolean;
+    reviewing: boolean;
+    openFile: string | null;
+    url: string;
+    title: string;
+}
+export interface OpenProjectFileInput {
+    filePath: string;
+    projectUrl?: string;
+    ensureReviewing?: boolean;
+}
+export interface DownloadProjectSnapshotInput {
+    destinationRoot: string;
+    snapshotName?: string;
+    projectUrl?: string;
+    maxArchiveBytes?: number;
+    maxExtractedBytes?: number;
+}
+export interface DownloadProjectSnapshotOutput extends ProjectSnapshotOutput {
+    projectId: string;
+}
 export interface ReplaceTrackedInput {
     expectedText: string;
     replacementText: string;
@@ -41,8 +69,10 @@ export interface ReplaceTrackedBatchOutput {
         replacementPresent: boolean;
         expectedStillPresent: boolean;
     }>;
+    finalTextMatches?: boolean;
     trackedSignal?: boolean;
 }
+export declare function isAuthenticatedOverleafPage(urlValue: string, hasLoginLink: boolean): boolean;
 export declare class OverleafBrowserClient {
     private browser?;
     private context?;
@@ -55,6 +85,14 @@ export declare class OverleafBrowserClient {
     private launchManagedContext;
     readOpenEditorText(projectUrl?: string): Promise<string>;
     isReviewingLikelyEnabled(projectUrl?: string): Promise<boolean>;
+    status(projectUrl?: string): Promise<OverleafStatus>;
+    ensureReviewing(projectUrl?: string): Promise<{
+        ok: boolean;
+        changed: boolean;
+        status: OverleafStatus;
+    }>;
+    openProjectFile(input: OpenProjectFileInput): Promise<OverleafStatus>;
+    downloadProjectSnapshot(input: DownloadProjectSnapshotInput): Promise<DownloadProjectSnapshotOutput>;
     replaceTextTracked(input: ReplaceTrackedInput): Promise<ReplaceTrackedOutput>;
     replaceTextsTracked(input: ReplaceTrackedBatchInput): Promise<ReplaceTrackedBatchOutput>;
 }

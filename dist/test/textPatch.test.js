@@ -63,4 +63,15 @@ test('planExactReplacement turns an anchored append into insertion only', () => 
         assert.equal(result.removedLength, 0);
     }
 });
+test('planExactReplacement limits the actual insertion rather than unique anchor context', () => {
+    const context = `start ${'context '.repeat(100)}end`;
+    const plan = planExactReplacement(context, {
+        expectedText: context,
+        replacementText: context.replace('end', 'small end'),
+        maxReplacementChars: 10,
+    });
+    assert.equal(plan.ok, true);
+    if (plan.ok)
+        assert.equal(plan.insert, 'small ');
+});
 //# sourceMappingURL=textPatch.test.js.map

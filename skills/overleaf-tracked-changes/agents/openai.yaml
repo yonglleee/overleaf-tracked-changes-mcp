@@ -1,4 +1,4 @@
 interface:
   display_name: "Overleaf Tracked Changes"
-  short_description: "Replay local LaTeX edits as Overleaf suggestions"
-  default_prompt: "Use $overleaf-tracked-changes to safely revise an Overleaf manuscript with tracked changes."
+  short_description: "Snapshot Overleaf, then replay safe tracked edits"
+  default_prompt: "Use $overleaf-tracked-changes to snapshot an Overleaf project and safely revise it with tracked changes."

@@ -1,7 +1,20 @@
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { extractProjectSnapshot, projectIdFromUrl } from './projectSnapshot.js';
 import { planExactReplacement } from './textPatch.js';
+export function isAuthenticatedOverleafPage(urlValue, hasLoginLink) {
+    try {
+        const url = new URL(urlValue);
+        const overleafHost = url.hostname === 'overleaf.com' || url.hostname.endsWith('.overleaf.com');
+        const authenticationPath = url.pathname.startsWith('/login')
+            || url.pathname.startsWith('/users/auth/');
+        return overleafHost && !authenticationPath && !hasLoginLink;
+    }
+    catch {
+        return false;
+    }
+}
 export class OverleafBrowserClient {
     browser;
     context;
@@ -10,9 +23,6 @@ export class OverleafBrowserClient {
     async close() {
         if (this.managedBrowser) {
             await this.context?.close().catch(() => undefined);
-        }
-        else {
-            await this.browser?.close().catch(() => undefined);
         }
         this.browser = undefined;
         this.context = undefined;
@@ -74,10 +84,14 @@ export class OverleafBrowserClient {
     }
     async waitForLogin(timeoutMs = 10 * 60 * 1000) {
         const page = await this.openLogin();
-        if (!page.url().includes('/login'))
-            return page;
-        await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: timeoutMs });
-        return page;
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const hasLoginLink = await page.evaluate(() => Array.from(document.querySelectorAll('a[href*="/login"]')).some((link) => /^log in$/i.test((link.innerText || '').trim()))).catch(() => true);
+            if (isAuthenticatedOverleafPage(page.url(), hasLoginLink))
+                return page;
+            await page.waitForTimeout(500);
+        }
+        throw new Error('Timed out waiting for a completed Overleaf login. Finish OAuth and return to Overleaf.');
     }
     async launchManagedContext() {
         const profileDir = browserProfileDirectory();
@@ -131,15 +145,146 @@ export class OverleafBrowserClient {
     async isReviewingLikelyEnabled(projectUrl) {
         const page = await this.connect(projectUrl);
         return page.evaluate(() => {
+            const modeButton = Array.from(document.querySelectorAll('button')).find((element) => {
+                const text = (element.innerText || element.getAttribute('aria-label') || '').trim();
+                return text === 'Reviewing';
+            });
+            if (modeButton)
+                return true;
             const reviewToggle = document.querySelector('button[aria-label="Reviewing"].reviewing, .review-mode-switcher-toggle-button.reviewing');
             if (reviewToggle)
                 return true;
             const activeReviewItem = Array.from(document.querySelectorAll('.dropdown-item.active')).some((element) => /reviewing|edits become suggestions/i.test(element.innerText));
             if (activeReviewItem)
                 return true;
-            const text = document.body?.innerText?.toLowerCase() || '';
-            return text.includes('reviewing') || text.includes('track changes') || text.includes('tracked changes');
+            return false;
         });
+    }
+    async status(projectUrl) {
+        const page = await this.connect(projectUrl);
+        if (page.url().includes('/project/')) {
+            await page.waitForFunction(() => {
+                const text = document.body?.innerText || '';
+                return Boolean(document.querySelector('.cm-editor, [role="treeitem"]')
+                    || /restricted|don[’']t have permission to load this page/i.test(text)
+                    || Array.from(document.querySelectorAll('a[href*="/login"]')).some((link) => (/^log in$/i.test((link.innerText || '').trim()))));
+            }, undefined, { timeout: 15_000 }).catch(() => undefined);
+        }
+        const pageState = await page.evaluate(() => {
+            const bodyText = document.body?.innerText || '';
+            const accessDenied = /restricted|don[’']t have permission to load this page/i.test(bodyText);
+            const loginLink = Array.from(document.querySelectorAll('a[href*="/login"]')).some((link) => (/^log in$/i.test((link.innerText || '').trim())));
+            const editorVisible = Boolean(document.querySelector('.cm-editor, [role="tabpanel"][aria-label="File tree"], [role="treeitem"]'));
+            return { accessDenied, loginLink, editorVisible };
+        });
+        const loggedIn = !page.url().includes('/login') && !pageState.loginLink;
+        const onProject = page.url().includes('/project/') && pageState.editorVisible && !pageState.accessDenied;
+        const reviewing = onProject ? await this.isReviewingLikelyEnabled() : false;
+        const openFile = onProject ? await page.evaluate(() => {
+            const selected = document.querySelector('[role="tab"][aria-selected="true"]');
+            if (!selected)
+                return null;
+            const label = (selected.getAttribute('aria-label') || selected.innerText || '').trim();
+            return label.replace(/\s+Close$/, '').trim() || null;
+        }) : null;
+        return {
+            ok: loggedIn && onProject && !pageState.accessDenied,
+            browserMode: process.env.OVERLEAF_BROWSER_CDP ? 'external-cdp' : 'managed-profile',
+            profile: process.env.OVERLEAF_BROWSER_CDP ? null : browserProfileDirectory(),
+            loggedIn,
+            onProject,
+            accessDenied: pageState.accessDenied,
+            reviewing,
+            openFile,
+            url: page.url(),
+            title: await page.title(),
+        };
+    }
+    async ensureReviewing(projectUrl) {
+        const page = await this.connect(projectUrl);
+        if (await this.isReviewingLikelyEnabled()) {
+            return { ok: true, changed: false, status: await this.status() };
+        }
+        const editingButton = page.getByRole('button', { name: 'Editing', exact: true });
+        if (await editingButton.count() !== 1) {
+            throw new Error('Editing mode button not found. Open a .tex file in the Overleaf editor first.');
+        }
+        await editingButton.click();
+        const exactReviewItem = page.getByRole('menuitem', {
+            name: 'Reviewing Edits become suggestions',
+            exact: true,
+        });
+        const fallbackReviewItem = page.locator('[role="menuitem"], .dropdown-item').filter({
+            hasText: 'Reviewing',
+        });
+        const reviewItem = await exactReviewItem.count() === 1 ? exactReviewItem : fallbackReviewItem;
+        if (await reviewItem.count() !== 1) {
+            throw new Error('Reviewing menu item not found after opening the editor mode menu.');
+        }
+        await reviewItem.click();
+        await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some((element) => ((element.innerText || element.getAttribute('aria-label') || '').trim() === 'Reviewing')), undefined, { timeout: 10_000 });
+        const status = await this.status();
+        return { ok: status.reviewing, changed: true, status };
+    }
+    async openProjectFile(input) {
+        const page = await this.connect(input.projectUrl);
+        const initialStatus = await this.status();
+        if (!initialStatus.loggedIn)
+            throw new Error('Overleaf login is required before opening a project file.');
+        if (initialStatus.accessDenied)
+            throw new Error('The logged-in Overleaf account cannot access this project.');
+        if (!initialStatus.onProject)
+            throw new Error('The Overleaf project editor is not loaded.');
+        const fileName = path.basename(input.filePath);
+        const fileTreePanel = page.getByRole('tabpanel', { name: 'File tree', exact: true });
+        const target = fileTreePanel.getByText(fileName, { exact: true });
+        const count = await target.count();
+        if (count !== 1) {
+            throw new Error(count === 0
+                ? `File is not visible in the expanded Overleaf file tree: ${input.filePath}`
+                : `File name is ambiguous in the Overleaf file tree: ${input.filePath}`);
+        }
+        await target.click();
+        await page.waitForFunction((filePath) => {
+            const selected = document.querySelector('[role="tab"][aria-selected="true"]');
+            return Boolean(selected && (selected.innerText || selected.getAttribute('aria-label') || '').includes(filePath));
+        }, fileName, { timeout: 15_000 });
+        if (input.ensureReviewing)
+            await this.ensureReviewing();
+        return this.status();
+    }
+    async downloadProjectSnapshot(input) {
+        const page = await this.connect(input.projectUrl);
+        const status = await this.status();
+        if (!status.loggedIn)
+            throw new Error('Overleaf login is required before downloading a snapshot.');
+        if (status.accessDenied)
+            throw new Error('The logged-in Overleaf account cannot access this project.');
+        if (!status.onProject)
+            throw new Error('Open an Overleaf project before downloading a snapshot.');
+        const projectId = projectIdFromUrl(input.projectUrl || page.url());
+        const downloadUrl = new URL(`/project/${projectId}/download/zip`, page.url()).toString();
+        const response = await page.context().request.get(downloadUrl, { timeout: 120_000 });
+        if (!response.ok()) {
+            throw new Error(`Overleaf snapshot download failed: HTTP ${response.status()}`);
+        }
+        const archive = Buffer.from(await response.body());
+        const maxArchiveBytes = input.maxArchiveBytes ?? 250 * 1024 * 1024;
+        if (archive.length > maxArchiveBytes) {
+            throw new Error(`Overleaf archive is too large (${archive.length} bytes > ${maxArchiveBytes}).`);
+        }
+        if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) {
+            throw new Error('Overleaf did not return a ZIP archive. The login may have expired.');
+        }
+        return {
+            projectId,
+            ...await extractProjectSnapshot({
+                archive,
+                destinationRoot: input.destinationRoot,
+                snapshotName: input.snapshotName,
+                maxExtractedBytes: input.maxExtractedBytes,
+            }),
+        };
     }
     async replaceTextTracked(input) {
         const result = await this.replaceTextsTracked({
@@ -196,9 +341,13 @@ export class OverleafBrowserClient {
         const orderedPlans = plans
             .filter((plan) => plan.ok)
             .slice()
-            .sort((a, b) => a.matchFrom - b.matchFrom);
+            .sort((a, b) => a.from - b.from);
         for (let index = 1; index < orderedPlans.length; index += 1) {
-            if (orderedPlans[index - 1].matchTo > orderedPlans[index].matchFrom) {
+            const previous = orderedPlans[index - 1];
+            const current = orderedPlans[index];
+            const ambiguousSharedStart = previous.from === current.from
+                && (previous.from === previous.to || current.from === current.to);
+            if (previous.to > current.from || ambiguousSharedStart) {
                 return { ok: false, dryRun, blocked: true, reason: 'overlapping_edits', plans };
             }
         }
@@ -263,9 +412,13 @@ export class OverleafBrowserClient {
                     to: first + edit.expectedText.length - suffixLength,
                     insert: edit.replacementText.slice(prefixLength, edit.replacementText.length - suffixLength),
                 };
-            }).sort((a, b) => a.matchFrom - b.matchFrom);
+            }).sort((a, b) => a.from - b.from);
             for (let index = 1; index < changes.length; index += 1) {
-                if (changes[index - 1].matchTo > changes[index].matchFrom) {
+                const previous = changes[index - 1];
+                const current = changes[index];
+                const ambiguousSharedStart = previous.from === current.from
+                    && (previous.from === previous.to || current.from === current.to);
+                if (previous.to > current.from || ambiguousSharedStart) {
                     throw new Error('overlapping_edits');
                 }
             }
@@ -274,16 +427,28 @@ export class OverleafBrowserClient {
             });
         }, input.edits);
         const after = await this.readOpenEditorText(input.projectUrl);
+        const expectedAfter = orderedPlans
+            .slice()
+            .sort((a, b) => b.from - a.from)
+            .reduce((text, plan) => (text.slice(0, plan.from) + plan.insert + text.slice(plan.to)), before);
+        let accumulatedDelta = 0;
+        const verification = orderedPlans.map((plan) => {
+            const finalFrom = plan.from + accumulatedDelta;
+            const removedText = before.slice(plan.from, plan.to);
+            const result = {
+                replacementPresent: after.slice(finalFrom, finalFrom + plan.insert.length) === plan.insert,
+                expectedStillPresent: removedText.length > 0
+                    && after.slice(finalFrom, finalFrom + removedText.length) === removedText,
+            };
+            accumulatedDelta += plan.insert.length - (plan.to - plan.from);
+            return result;
+        });
         return {
-            ok: true,
+            ok: after === expectedAfter,
             dryRun: false,
             plans,
-            verification: input.edits.map((edit) => ({
-                replacementPresent: edit.replacementText.length > 0
-                    ? after.includes(edit.replacementText)
-                    : !after.includes(edit.expectedText),
-                expectedStillPresent: after.includes(edit.expectedText),
-            })),
+            verification,
+            finalTextMatches: after === expectedAfter,
             trackedSignal: await page.locator('.ol-cm-change, .review-panel-entry-change').count() > 0,
         };
     }

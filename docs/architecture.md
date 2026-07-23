@@ -1,46 +1,55 @@
 # Architecture
 
-The server deliberately separates reading from writing.
+The server separates complete read snapshots from narrow tracked writes.
+
+## Complete project snapshots
+
+`download_project_snapshot` downloads Overleaf's Source ZIP through the authenticated browser context. The archive is size-limited, checked for unsafe paths, and extracted through a ZIP library into a new directory. Existing destinations are rejected and partial extraction directories are removed on failure.
+
+Snapshots are immutable baselines. They are not live synchronization and are never uploaded as complete files.
 
 ## Broad local read
 
-The tools `read_project_tree`, `read_local_file`, and `search_project` operate on a local Overleaf project folder. They are intended for manuscript understanding: section structure, citations, table files, figure names, and terminology. They never write to Overleaf.
+`read_project_tree`, `read_local_file`, and `search_project` operate on a local snapshot or working copy. They provide manuscript context without writing to Overleaf.
 
 ## Narrow remote write
 
-The tools `replace_text_tracked` and `replace_texts_tracked` operate on the currently open Overleaf editor through a logged-in browser session. They do not call `olcli push`, `olcli sync`, Git push, Dropbox sync, or the Overleaf upload endpoint.
+`replace_text_tracked` and `replace_texts_tracked` operate on the current Overleaf CodeMirror editor through a logged-in browser session. They do not call `olcli push`, `olcli sync`, Git push, Dropbox sync, or the Overleaf upload endpoint.
 
 The write path is:
 
-1. Launch a persistent managed Chrome profile, or connect to an optional external browser over Chrome DevTools Protocol.
-2. Read the current CodeMirror document text from the Overleaf web editor.
-3. Require an exact unique `expected_text` match.
-4. Default to dry-run.
-5. Remove common prefix and suffix text so each replacement becomes the smallest possible insertion, deletion, or replacement.
-6. When `dry_run=false`, call `view.dispatch({ changes })` on CodeMirror. Batch mode sends up to 40 non-overlapping changes in one transaction.
-7. Read the document back once and verify every replacement.
+1. Launch a persistent managed Chrome profile or connect to external Chrome over CDP.
+2. Open the requested file and verify Reviewing.
+3. Read the current remote CodeMirror document.
+4. Require each `expected_text` to be exact and unique.
+5. Default to dry-run and reject overlapping actual write ranges. Unique anchor contexts may overlap.
+6. Remove common prefix and suffix text to minimize the dispatched range.
+7. Dispatch up to 40 independent changes in one transaction.
+8. Read the document back and verify every replacement.
+
+## Browser surfaces
+
+The MCP browser and the Codex in-app browser are separate sessions. The recommended desktop path is one visible Chrome process with a stable user-data directory and fixed local CDP endpoint. `browser` starts or reuses that Chrome; MCP commands connect without owning or closing it. Login persistence belongs to the profile directory, not the port. The managed-profile launcher remains a fallback when `OVERLEAF_BROWSER_CDP` is not configured.
 
 ## Local drafting
 
-Safe local-to-Overleaf synchronization is a three-way workflow:
+Safe local-to-Overleaf revision uses a live three-way rebase:
 
-1. Preserve the remote file at the start of a drafting round as the baseline.
+1. Download an immutable remote snapshot.
 2. Edit a separate local working copy.
-3. Replay only baseline-to-working-copy hunks whose exact anchors still match the live remote file.
+3. Derive word-level atomic changes from baseline to working copy and from baseline to the live remote editor.
+4. Preserve remote-only changes, recognize identical changes as already applied, and map non-overlapping local changes onto current remote offsets.
+5. Build unique remote anchors around each mapped local change and dry-run the actual write ranges.
+6. Report overlapping token changes as conflicts and never choose a winner automatically.
+7. Replay safe changes only after confirmation. Partial application while conflicts remain requires explicit `allow_partial: true`.
 
-The baseline prevents unrelated collaborator changes from being interpreted as local deletions. A changed or ambiguous anchor blocks the batch.
+The immutable baseline records local intent; it is not replaced before sync. The live remote editor supplies current collaboration state. Automatic baseline refresh is intentionally avoided while tracked suggestions are pending because later acceptance or rejection can change the authoritative text.
 
-## Safety assumptions
+`list_local_changes` inventories the baseline and working trees without touching Overleaf. `plan_local_file_changes` creates local-only hunks for one existing text file. `sync_local_file_tracked` composes the live three-way plan, remote file selection, Reviewing verification, conflict policy, and tracked batch dispatcher. File creation, file deletion, and binary synchronization are deliberately excluded.
 
-- The target file is already open in Overleaf for v0.3.
-- Managed Chrome is relaunched after closure and reuses its saved Overleaf session.
-- Reviewing/Track Changes mode should be enabled in the Overleaf UI.
-- The MCP refuses to write when reviewing mode is required but not detected.
-- The MCP refuses missing or duplicate anchors.
+## Current limitations
 
-## Future work
-
-- Add robust file-tree opening by path.
-- Add comment insertion.
-- Add compile support through Overleaf UI or `olcli compile`.
-- Add an optional ShareJS/OT implementation after disposable-project testing.
+- Nested files must be visible in the expanded file tree before automatic selection.
+- Reviewing detection and CodeMirror access depend on Overleaf's current UI.
+- Comment insertion and suggestion acceptance/rejection are not implemented.
+- Direct ShareJS/OT access remains intentionally out of scope until disposable-project testing supports it.

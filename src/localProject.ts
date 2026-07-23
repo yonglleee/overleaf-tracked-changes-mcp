@@ -25,6 +25,10 @@ const DEFAULT_TEXT_EXTENSIONS = new Set([
   '.yml',
 ]);
 
+export function isSupportedTextFile(relativePath: string): boolean {
+  return DEFAULT_TEXT_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+}
+
 export interface TreeEntry {
   path: string;
   type: 'file' | 'dir';
@@ -95,8 +99,7 @@ export async function searchProject(root: string, query: string, maxMatches = 80
   for (const entry of tree) {
     if (matches.length >= maxMatches) break;
     if (entry.type !== 'file') continue;
-    const ext = path.extname(entry.path).toLowerCase();
-    if (!DEFAULT_TEXT_EXTENSIONS.has(ext)) continue;
+    if (!isSupportedTextFile(entry.path)) continue;
     if ((entry.bytes || 0) > 500_000) continue;
 
     let content: string;

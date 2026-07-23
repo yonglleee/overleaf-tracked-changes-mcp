@@ -1,6 +1,6 @@
 {
   "name": "overleaf-tracked-changes-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for safe paragraph-scale Overleaf edits through tracked browser changes.",
   "repository": {
     "type": "git",
@@ -24,8 +24,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --test dist/test/*.test.js",
     "check": "npm run build && npm test",
-    "dev": "tsx src/index.ts",
-    "prepare": "npm run build"
+    "dev": "tsx src/index.ts"
   },
   "keywords": [
     "mcp",

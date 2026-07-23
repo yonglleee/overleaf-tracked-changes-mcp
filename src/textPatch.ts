@@ -1,7 +1,10 @@
 export interface ReplacementPlan {
   ok: true;
+  matchFrom: number;
+  matchTo: number;
   from: number;
   to: number;
+  insert: string;
   removedLength: number;
   insertedLength: number;
   beforePreview: string;
@@ -34,6 +37,37 @@ export function countOccurrences(haystack: string, needle: string): number {
     count += 1;
     index = found + needle.length;
   }
+}
+
+export function minimizeReplacement(expectedText: string, replacementText: string) {
+  let prefixLength = 0;
+  const prefixLimit = Math.min(expectedText.length, replacementText.length);
+  while (
+    prefixLength < prefixLimit
+    && expectedText.charCodeAt(prefixLength) === replacementText.charCodeAt(prefixLength)
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  const suffixLimit = Math.min(
+    expectedText.length - prefixLength,
+    replacementText.length - prefixLength,
+  );
+  while (
+    suffixLength < suffixLimit
+    && expectedText.charCodeAt(expectedText.length - suffixLength - 1)
+      === replacementText.charCodeAt(replacementText.length - suffixLength - 1)
+  ) {
+    suffixLength += 1;
+  }
+
+  return {
+    prefixLength,
+    suffixLength,
+    removedLength: expectedText.length - prefixLength - suffixLength,
+    insert: replacementText.slice(prefixLength, replacementText.length - suffixLength),
+  };
 }
 
 export function planExactReplacement(
@@ -79,14 +113,20 @@ export function planExactReplacement(
     };
   }
 
-  const from = first;
-  const to = first + expectedText.length;
+  const minimized = minimizeReplacement(expectedText, replacementText);
+  const matchFrom = first;
+  const matchTo = first + expectedText.length;
+  const from = matchFrom + minimized.prefixLength;
+  const to = matchTo - minimized.suffixLength;
   return {
     ok: true,
+    matchFrom,
+    matchTo,
     from,
     to,
-    removedLength: expectedText.length,
-    insertedLength: replacementText.length,
+    insert: minimized.insert,
+    removedLength: minimized.removedLength,
+    insertedLength: minimized.insert.length,
     beforePreview: documentText.slice(Math.max(0, from - previewChars), from),
     afterPreview: documentText.slice(to, Math.min(documentText.length, to + previewChars)),
   };

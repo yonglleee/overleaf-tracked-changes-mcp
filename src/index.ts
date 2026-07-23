@@ -7,7 +7,7 @@ import {
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { readLocalFile, readProjectTree, resolveLocalRoot, searchProject } from './localProject.js';
-import { OverleafBrowserClient } from './overleafBrowser.js';
+import { browserProfileDirectory, OverleafBrowserClient } from './overleafBrowser.js';
 
 const browserClient = new OverleafBrowserClient();
 
@@ -51,7 +51,7 @@ const tools: Tool[] = [
   },
   {
     name: 'read_open_overleaf_editor',
-    description: 'Read the currently open Overleaf editor text through a logged-in browser CDP session.',
+    description: 'Read the currently open Overleaf editor text through the managed or externally connected browser session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -75,6 +75,34 @@ const tools: Tool[] = [
       },
     },
   },
+  {
+    name: 'replace_texts_tracked',
+    description: 'Apply several non-overlapping exact replacements in one tracked Overleaf transaction. Defaults to dry-run and minimizes each edit to its changed span.',
+    inputSchema: {
+      type: 'object',
+      required: ['edits'],
+      properties: {
+        project_url: { type: 'string' },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 40,
+          items: {
+            type: 'object',
+            required: ['expected_text', 'replacement_text'],
+            properties: {
+              expected_text: { type: 'string' },
+              replacement_text: { type: 'string' },
+            },
+          },
+        },
+        dry_run: { type: 'boolean', default: true },
+        require_reviewing: { type: 'boolean', default: true },
+        max_replacement_chars: { type: 'number', default: 12000 },
+        max_edits: { type: 'number', default: 40 },
+      },
+    },
+  },
 ];
 
 function textResult(value: unknown) {
@@ -95,7 +123,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 const server = new Server(
   {
     name: 'overleaf-tracked-changes-mcp',
-    version: '0.1.0',
+    version: '0.3.0',
   },
   {
     capabilities: {
@@ -134,9 +162,90 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         maxReplacementChars: Number(args.max_replacement_chars || 12000),
       }));
     }
+    case 'replace_texts_tracked': {
+      const edits = Array.isArray(args.edits) ? args.edits.map((value) => {
+        const edit = asRecord(value);
+        return {
+          expectedText: String(edit.expected_text),
+          replacementText: String(edit.replacement_text),
+        };
+      }) : [];
+      return textResult(await browserClient.replaceTextsTracked({
+        projectUrl: args.project_url as string | undefined,
+        edits,
+        dryRun: args.dry_run !== false,
+        requireReviewing: args.require_reviewing !== false,
+        maxReplacementChars: Number(args.max_replacement_chars || 12000),
+        maxEdits: Number(args.max_edits || 40),
+      }));
+    }
     default:
       throw new Error(`Unknown tool: ${request.params.name}`);
   }
 });
 
-await server.connect(new StdioServerTransport());
+async function runLoginCommand(): Promise<void> {
+  const client = new OverleafBrowserClient();
+  console.log(`Opening Overleaf login in the managed browser profile:\n${browserProfileDirectory()}`);
+  console.log('Complete login in the browser window. This command will finish automatically.');
+  try {
+    const page = await client.waitForLogin();
+    console.log(`Overleaf login is ready: ${page.url()}`);
+  } finally {
+    await client.close();
+  }
+}
+
+async function runDoctorCommand(): Promise<void> {
+  const client = new OverleafBrowserClient();
+  try {
+    const target = process.env.OVERLEAF_PROJECT_URL || 'https://www.overleaf.com/project';
+    const page = await client.connect(target);
+    const loggedIn = !page.url().includes('/login');
+    const onProject = page.url().includes('/project/');
+    const reviewing = onProject ? await client.isReviewingLikelyEnabled() : false;
+    console.log(JSON.stringify({
+      ok: loggedIn,
+      browserMode: process.env.OVERLEAF_BROWSER_CDP ? 'external-cdp' : 'managed-profile',
+      profile: process.env.OVERLEAF_BROWSER_CDP ? null : browserProfileDirectory(),
+      loggedIn,
+      onProject,
+      reviewing,
+      url: page.url(),
+      title: await page.title(),
+    }, null, 2));
+  } finally {
+    await client.close();
+  }
+}
+
+function printHelp(): void {
+  console.log(`overleaf-tracked-changes-mcp
+
+Usage:
+  overleaf-tracked-changes-mcp          Start the MCP stdio server
+  overleaf-tracked-changes-mcp login    Open Chrome and persist an Overleaf login
+  overleaf-tracked-changes-mcp doctor   Check browser, login, project, and Reviewing status
+  overleaf-tracked-changes-mcp --help   Show this help
+
+Environment:
+  OVERLEAF_PROJECT_URL       Default Overleaf project URL
+  OVERLEAF_MCP_LOCAL_ROOT    Local manuscript folder
+  OVERLEAF_BROWSER_PROFILE   Managed Chrome profile directory
+  OVERLEAF_BROWSER_CHANNEL   Playwright browser channel, default: chrome
+  OVERLEAF_BROWSER_CDP       Optional existing Chrome/Edge CDP URL`);
+}
+
+const command = process.argv[2];
+if (command === 'login') {
+  await runLoginCommand();
+} else if (command === 'doctor') {
+  await runDoctorCommand();
+} else if (command === '--help' || command === '-h' || command === 'help') {
+  printHelp();
+} else if (command) {
+  printHelp();
+  process.exitCode = 1;
+} else {
+  await server.connect(new StdioServerTransport());
+}

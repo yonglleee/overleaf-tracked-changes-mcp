@@ -1,18 +1,39 @@
 {
   "name": "overleaf-tracked-changes-mcp",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "MCP server for safe paragraph-scale Overleaf edits through tracked browser changes.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yonglleee/overleaf-tracked-changes-mcp.git"
+  },
+  "homepage": "https://github.com/yonglleee/overleaf-tracked-changes-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/yonglleee/overleaf-tracked-changes-mcp/issues"
+  },
   "type": "module",
   "bin": {
-    "overleaf-tracked-changes-mcp": "./dist/index.js"
+    "overleaf-tracked-changes-mcp": "./dist/src/index.js"
   },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test dist/test/*.test.js",
     "check": "npm run build && npm test",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepare": "npm run build"
   },
-  "keywords": ["mcp", "overleaf", "latex", "tracked-changes", "codemirror"],
+  "keywords": [
+    "mcp",
+    "overleaf",
+    "latex",
+    "tracked-changes",
+    "codemirror"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=20"

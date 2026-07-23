@@ -1,102 +1,136 @@
 # Overleaf Tracked Changes MCP
 
-MCP server for safe, paragraph-scale Overleaf manuscript edits through the web editor, designed for AI-assisted paper writing where collaborators may edit the same `.tex` files.
+Edit LaTeX locally with an AI agent, then replay selected changes into Overleaf as reviewable tracked changes. The server writes through the live Overleaf editor; it never uploads an entire `.tex` file.
 
-The guiding rule is simple:
+> Read broadly from the local project. Write narrowly through Overleaf tracked changes.
 
-> Read broadly from the local project, write narrowly through Overleaf tracked changes.
+## What you get
 
-This is not an `olcli push` wrapper. `olcli push`, Git bridge, and Dropbox sync operate at file granularity and can overwrite another collaborator's edits in the same `.tex` file. This server is designed to patch a single exact text range through the Overleaf browser editor.
+- persistent Overleaf login in a separate Chrome profile;
+- automatic Chrome startup and restart after the window is closed;
+- local project tree, file reading, and search tools;
+- exact single or batch tracked replacements;
+- dry-run by default, unique-anchor checks, and drift protection;
+- an Agent Skill that teaches Codex and other AgentSkills-compatible agents the safe workflow.
 
-## Status
+## AI agent install (recommended)
 
-This repository is an early MVP. The local project read/search tools are straightforward. The Overleaf write path is intentionally conservative:
-
-- the target `.tex` file should already be open in Overleaf,
-- Reviewing/Track Changes should be enabled,
-- writes default to `dry_run: true`,
-- replacement requires one exact `expected_text` match,
-- the implementation uses CodeMirror `view.dispatch`, not file upload.
-
-Test on a disposable Overleaf project before using it on a real manuscript.
-
-## Tools
-
-- `read_project_tree`: read local project tree for broad context.
-- `read_local_file`: read one local file.
-- `search_project`: search local LaTeX project files.
-- `read_open_overleaf_editor`: read the currently open Overleaf editor text through a browser CDP session.
-- `replace_text_tracked`: exact-match replacement in the currently open Overleaf editor, default dry-run.
-
-## Install
+Install the Agent Skill from this GitHub repository:
 
 ```bash
-npm install
-npm run build
+npx skills add yonglleee/overleaf-tracked-changes-mcp
 ```
 
-## Browser setup
+GitHub CLI users can install the same skill with:
 
-Launch Chrome or Edge with remote debugging and a separate user profile:
-
-```powershell
-chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\temp\overleaf-mcp-profile
+```bash
+gh skill install yonglleee/overleaf-tracked-changes-mcp overleaf-tracked-changes --scope user
 ```
 
-Log into Overleaf in that browser, open the project, open the target `.tex` file, and enable Reviewing/Track Changes.
+Then install the MCP executable directly from GitHub until an npm package is published:
 
-Set environment variables:
-
-```powershell
-$env:OVERLEAF_BROWSER_CDP = "http://127.0.0.1:9222"
-$env:OVERLEAF_PROJECT_URL = "https://www.overleaf.com/project/<project-id>"
-$env:OVERLEAF_MCP_LOCAL_ROOT = "C:\path\to\local\overleaf\project"
+```bash
+npm install -g github:yonglleee/overleaf-tracked-changes-mcp
 ```
 
-## Codex MCP config example
+Configure your MCP client to run:
 
 ```json
 {
   "mcpServers": {
     "overleaf-tracked-changes": {
-      "command": "node",
-      "args": ["C:/path/to/overleaf-tracked-changes-mcp/dist/index.js"],
+      "command": "overleaf-tracked-changes-mcp",
       "env": {
-        "OVERLEAF_BROWSER_CDP": "http://127.0.0.1:9222",
-        "OVERLEAF_PROJECT_URL": "https://www.overleaf.com/project/<project-id>",
-        "OVERLEAF_MCP_LOCAL_ROOT": "C:/path/to/local/overleaf/project"
+        "OVERLEAF_PROJECT_URL": "https://www.overleaf.com/project/YOUR_PROJECT_ID",
+        "OVERLEAF_MCP_LOCAL_ROOT": "C:/path/to/local/manuscript"
       }
     }
   }
 }
 ```
 
-## Safe edit flow
+The repository contains the skill at `skills/overleaf-tracked-changes/SKILL.md`. Agents without AgentSkills support can still use the MCP tools directly.
 
-1. Use `read_project_tree`, `search_project`, and `read_local_file` to understand the manuscript.
-2. Draft the replacement text in Codex.
-3. Use `read_open_overleaf_editor` to read the current remote text.
-4. Call `replace_text_tracked` with `dry_run: true`.
-5. Confirm the exact matched range.
-6. Call `replace_text_tracked` with `dry_run: false` only after confirmation.
-7. Verify the Overleaf UI shows a tracked change.
+## First login
 
-## Why not upload files?
+Run this once:
 
-Because multiple collaborators can edit `manuscript.tex` at once. A file-level upload can replace the remote file with a stale local copy. This server avoids that class of problem by requiring the exact current text to still exist in Overleaf before making a narrow replacement.
+```bash
+overleaf-tracked-changes-mcp login
+```
 
-## Limitations
+A separate Chrome window opens. Sign in to Overleaf normally; the command exits after login. Passwords and copied cookies are never stored by this project.
 
-- v0.1 expects the target Overleaf file to already be open.
-- Reviewing mode detection is heuristic.
-- CodeMirror internals and Overleaf DOM can change.
-- This does not accept or reject tracked changes.
-- This does not yet add comments or compile.
+The login is kept in a dedicated browser profile. You may close Chrome afterward. The next MCP operation automatically starts Chrome again and reuses the saved login.
 
-## Security notes
+Check setup at any time:
 
-`npm audit --omit=dev` currently reports a moderate advisory through `@modelcontextprotocol/sdk` -> `@hono/node-server` with no available fix. This server uses stdio transport, not Hono static file serving, but review the advisory before publishing a production package.
+```bash
+overleaf-tracked-changes-mcp doctor
+```
+
+## Use with an agent
+
+Open the target project and `.tex` file in the managed Chrome window, enable **Reviewing**, then ask the agent to revise the manuscript with tracked changes.
+
+The safe editing flow is:
+
+1. Read local project context.
+2. Read the current remote editor before writing.
+3. Prepare small exact changes or a local baseline-to-working-copy diff.
+4. Run `replace_text_tracked` or `replace_texts_tracked` with `dry_run: true`.
+5. Apply only after the planned anchors and ranges are confirmed.
+6. Verify Overleaf shows suggestions attributed to the logged-in account.
+
+If a collaborator changed the same anchored region, the operation is blocked. Unrelated remote edits are not replaced.
+
+## MCP tools
+
+- `read_project_tree`: inspect the local manuscript tree.
+- `read_local_file`: read one local project file.
+- `search_project`: search local LaTeX project files.
+- `read_open_overleaf_editor`: read the live Overleaf editor.
+- `replace_text_tracked`: apply one exact tracked replacement; dry-run by default.
+- `replace_texts_tracked`: apply up to 40 non-overlapping replacements in one transaction.
+
+## Advanced browser connection
+
+The default managed profile is the simplest setup. To reuse a Chrome or Edge instance that you start yourself, set:
+
+```powershell
+$env:OVERLEAF_BROWSER_CDP = "http://127.0.0.1:9222"
+```
+
+Optional browser settings:
+
+- `OVERLEAF_BROWSER_PROFILE`: custom managed profile directory.
+- `OVERLEAF_BROWSER_CHANNEL`: Playwright channel, default `chrome`.
+- `OVERLEAF_BROWSER_CDP`: external Chrome/Edge debugging endpoint; disables managed startup.
+
+## Development
+
+Requirements: Node.js 20+ and Google Chrome.
+
+```bash
+git clone https://github.com/yonglleee/overleaf-tracked-changes-mcp.git
+cd overleaf-tracked-changes-mcp
+npm install
+npm run check
+node dist/src/index.js login
+```
+
+## Safety and limitations
+
+- Test on a disposable project before using a production manuscript.
+- The target file currently needs to be open in Overleaf.
+- Reviewing detection and CodeMirror access depend on Overleaf's current web UI.
+- The server does not accept or reject suggestions and does not yet add comments.
+- Do not use `olcli push`, Git upload, or Dropbox sync for concurrent tracked edits; those paths replace whole files.
 
 ## License
 
 MIT
+
+## Acknowledgements
+
+Thanks to [cellis212/overleaf-tracked-changes-mcp-guide](https://github.com/cellis212/overleaf-tracked-changes-mcp-guide) for documenting and sharing an Overleaf tracked-changes workflow that helped inform this project.

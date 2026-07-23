@@ -1,4 +1,6 @@
-import { chromium, type Browser, type Page } from 'playwright';
+import os from 'node:os';
+import path from 'node:path';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { planExactReplacement } from './textPatch.js';
 
 export interface ReplaceTrackedInput {
@@ -7,6 +9,20 @@ export interface ReplaceTrackedInput {
   dryRun?: boolean;
   requireReviewing?: boolean;
   maxReplacementChars?: number;
+  projectUrl?: string;
+}
+
+export interface TrackedReplacement {
+  expectedText: string;
+  replacementText: string;
+}
+
+export interface ReplaceTrackedBatchInput {
+  edits: TrackedReplacement[];
+  dryRun?: boolean;
+  requireReviewing?: boolean;
+  maxReplacementChars?: number;
+  maxEdits?: number;
   projectUrl?: string;
 }
 
@@ -20,28 +36,86 @@ export interface ReplaceTrackedOutput {
     replacementPresent: boolean;
     expectedStillPresent: boolean;
   };
+  trackedSignal?: boolean;
+}
+
+export interface ReplaceTrackedBatchOutput {
+  ok: boolean;
+  dryRun: boolean;
+  blocked?: boolean;
+  reason?: string;
+  plans?: unknown[];
+  verification?: Array<{
+    replacementPresent: boolean;
+    expectedStillPresent: boolean;
+  }>;
+  trackedSignal?: boolean;
 }
 
 export class OverleafBrowserClient {
   private browser?: Browser;
+  private context?: BrowserContext;
   private page?: Page;
+  private managedBrowser = false;
+
+  async close(): Promise<void> {
+    if (this.managedBrowser) {
+      await this.context?.close().catch(() => undefined);
+    } else {
+      await this.browser?.close().catch(() => undefined);
+    }
+    this.browser = undefined;
+    this.context = undefined;
+    this.page = undefined;
+    this.managedBrowser = false;
+  }
 
   async connect(projectUrl?: string): Promise<Page> {
-    if (this.page && !this.page.isClosed()) return this.page;
-
-    const cdpUrl = process.env.OVERLEAF_BROWSER_CDP;
-    if (!cdpUrl) {
-      throw new Error('Set OVERLEAF_BROWSER_CDP to a Chrome/Edge remote debugging URL.');
+    if (this.page && !this.page.isClosed()) {
+      if (projectUrl && !this.page.url().includes(projectUrl)) {
+        await this.page.goto(projectUrl, { waitUntil: 'domcontentloaded' });
+      }
+      return this.page;
     }
 
-    this.browser = await chromium.connectOverCDP(cdpUrl);
-    const contexts = this.browser.contexts();
-    if (contexts.length === 0) throw new Error('No browser contexts found in CDP session.');
-    const pages = contexts.flatMap((context) => context.pages());
     const wantedUrl = projectUrl || process.env.OVERLEAF_PROJECT_URL;
-    const overleafPage = pages.find((page) => page.url().includes('overleaf.com/project'));
+    if (this.context) {
+      try {
+        const pages = this.context.pages();
+        this.page = pages.find((page) => wantedUrl && page.url().includes(wantedUrl))
+          || pages.find((page) => page.url().includes('overleaf.com'))
+          || pages[0]
+          || await this.context.newPage();
+        if (wantedUrl && !this.page.url().includes(wantedUrl)) {
+          await this.page.goto(wantedUrl, { waitUntil: 'domcontentloaded' });
+        }
+        return this.page;
+      } catch {
+        this.browser = undefined;
+        this.context = undefined;
+        this.page = undefined;
+        this.managedBrowser = false;
+      }
+    }
 
-    this.page = overleafPage || pages[0] || await contexts[0].newPage();
+    const cdpUrl = process.env.OVERLEAF_BROWSER_CDP;
+    if (cdpUrl) {
+      this.browser = await chromium.connectOverCDP(cdpUrl);
+      const contexts = this.browser.contexts();
+      if (contexts.length === 0) throw new Error('No browser contexts found in CDP session.');
+      this.context = contexts[0];
+      this.managedBrowser = false;
+    } else {
+      this.context = await this.launchManagedContext();
+      this.browser = this.context.browser() || undefined;
+      this.managedBrowser = true;
+    }
+
+    const pages = this.context.pages();
+    const overleafPage = pages.find((page) => wantedUrl && page.url().includes(wantedUrl))
+      || pages.find((page) => page.url().includes('overleaf.com'));
+
+    this.page = overleafPage || pages[0] || await this.context.newPage();
 
     if (wantedUrl && !this.page.url().includes(wantedUrl)) {
       await this.page.goto(wantedUrl, { waitUntil: 'domcontentloaded' });
@@ -50,21 +124,114 @@ export class OverleafBrowserClient {
     return this.page;
   }
 
+  async openLogin(): Promise<Page> {
+    return this.connect('https://www.overleaf.com/login');
+  }
+
+  async waitForLogin(timeoutMs = 10 * 60 * 1000): Promise<Page> {
+    const page = await this.openLogin();
+    if (!page.url().includes('/login')) return page;
+    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: timeoutMs });
+    return page;
+  }
+
+  private async launchManagedContext(): Promise<BrowserContext> {
+    const profileDir = browserProfileDirectory();
+    const channel = process.env.OVERLEAF_BROWSER_CHANNEL || 'chrome';
+    try {
+      return await chromium.launchPersistentContext(profileDir, {
+        channel,
+        headless: false,
+        args: ['--no-first-run', '--no-default-browser-check'],
+      });
+    } catch (error) {
+      throw new Error(
+        `Could not launch the managed ${channel} browser. Install Chrome or set OVERLEAF_BROWSER_CDP for an existing browser. ${String(error)}`,
+      );
+    }
+  }
+
   async readOpenEditorText(projectUrl?: string): Promise<string> {
     const page = await this.connect(projectUrl);
-    return page.evaluate(readEditorTextInPage);
+    return page.evaluate(() => {
+      function findCodeMirrorViewInPage(): any {
+        const candidates: Element[] = [];
+        for (const selector of ['.cm-editor', '.cm-content', '[class*="cm-editor"]']) {
+          for (const element of document.querySelectorAll(selector)) candidates.push(element);
+        }
+        function maybeView(value: any): any {
+          if (!value || typeof value !== 'object') return null;
+          if (value.state?.doc && typeof value.dispatch === 'function') return value;
+          if (value.view?.state?.doc && typeof value.view.dispatch === 'function') return value.view;
+          return null;
+        }
+        for (const element of candidates) {
+          let current: Element | null = element;
+          while (current) {
+            for (const key of Object.keys(current as any)) {
+              const view = maybeView((current as any)[key]);
+              if (view) return view;
+            }
+            current = current.parentElement;
+          }
+        }
+        throw new Error('CodeMirror editor view not found. Open the target .tex file in Overleaf first.');
+      }
+      const view = findCodeMirrorViewInPage();
+      return view.state.doc.toString();
+    });
   }
 
   async isReviewingLikelyEnabled(projectUrl?: string): Promise<boolean> {
     const page = await this.connect(projectUrl);
     return page.evaluate(() => {
+      const reviewToggle = document.querySelector<HTMLElement>(
+        'button[aria-label="Reviewing"].reviewing, .review-mode-switcher-toggle-button.reviewing',
+      );
+      if (reviewToggle) return true;
+
+      const activeReviewItem = Array.from(
+        document.querySelectorAll<HTMLElement>('.dropdown-item.active'),
+      ).some((element) => /reviewing|edits become suggestions/i.test(element.innerText));
+      if (activeReviewItem) return true;
+
       const text = document.body?.innerText?.toLowerCase() || '';
       return text.includes('reviewing') || text.includes('track changes') || text.includes('tracked changes');
     });
   }
 
   async replaceTextTracked(input: ReplaceTrackedInput): Promise<ReplaceTrackedOutput> {
+    const result = await this.replaceTextsTracked({
+      edits: [{
+        expectedText: input.expectedText,
+        replacementText: input.replacementText,
+      }],
+      dryRun: input.dryRun,
+      requireReviewing: input.requireReviewing,
+      maxReplacementChars: input.maxReplacementChars,
+      maxEdits: 1,
+      projectUrl: input.projectUrl,
+    });
+    return {
+      ok: result.ok,
+      dryRun: result.dryRun,
+      blocked: result.blocked,
+      reason: result.reason,
+      plan: result.plans?.[0],
+      verification: result.verification?.[0],
+      trackedSignal: result.trackedSignal,
+    };
+  }
+
+  async replaceTextsTracked(input: ReplaceTrackedBatchInput): Promise<ReplaceTrackedBatchOutput> {
     const dryRun = input.dryRun !== false;
+    const maxEdits = input.maxEdits ?? 40;
+    if (input.edits.length === 0) {
+      return { ok: false, dryRun, blocked: true, reason: 'no_edits' };
+    }
+    if (input.edits.length > maxEdits) {
+      return { ok: false, dryRun, blocked: true, reason: 'too_many_edits' };
+    }
     if (input.requireReviewing !== false) {
       const reviewing = await this.isReviewingLikelyEnabled(input.projectUrl);
       if (!reviewing) {
@@ -78,83 +245,137 @@ export class OverleafBrowserClient {
     }
 
     const before = await this.readOpenEditorText(input.projectUrl);
-    const plan = planExactReplacement(before, {
-      expectedText: input.expectedText,
-      replacementText: input.replacementText,
+    const plans = input.edits.map((edit) => planExactReplacement(before, {
+      expectedText: edit.expectedText,
+      replacementText: edit.replacementText,
       maxReplacementChars: input.maxReplacementChars,
-    });
-
-    if (!plan.ok) {
-      return { ok: false, dryRun, blocked: true, reason: plan.reason, plan };
+    }));
+    const blockedPlan = plans.find((plan) => !plan.ok);
+    if (blockedPlan && !blockedPlan.ok) {
+      return { ok: false, dryRun, blocked: true, reason: blockedPlan.reason, plans };
     }
 
-    if (dryRun) {
-      return { ok: true, dryRun: true, plan };
+    const orderedPlans = plans
+      .filter((plan): plan is Extract<typeof plan, { ok: true }> => plan.ok)
+      .slice()
+      .sort((a, b) => a.matchFrom - b.matchFrom);
+    for (let index = 1; index < orderedPlans.length; index += 1) {
+      if (orderedPlans[index - 1].matchTo > orderedPlans[index].matchFrom) {
+        return { ok: false, dryRun, blocked: true, reason: 'overlapping_edits', plans };
+      }
     }
+
+    if (dryRun) return { ok: true, dryRun: true, plans };
 
     const page = await this.connect(input.projectUrl);
-    await page.evaluate(replaceExactOnceInPage, {
-      expectedText: input.expectedText,
-      replacementText: input.replacementText,
-    });
+    await page.evaluate((edits) => {
+      function findCodeMirrorViewInPage(): any {
+        const candidates: Element[] = [];
+        for (const selector of ['.cm-editor', '.cm-content', '[class*="cm-editor"]']) {
+          for (const element of document.querySelectorAll(selector)) candidates.push(element);
+        }
+        function maybeView(value: any): any {
+          if (!value || typeof value !== 'object') return null;
+          if (value.state?.doc && typeof value.dispatch === 'function') return value;
+          if (value.view?.state?.doc && typeof value.view.dispatch === 'function') return value.view;
+          return null;
+        }
+        for (const element of candidates) {
+          let current: Element | null = element;
+          while (current) {
+            for (const key of Object.keys(current as any)) {
+              const view = maybeView((current as any)[key]);
+              if (view) return view;
+            }
+            current = current.parentElement;
+          }
+        }
+        throw new Error('CodeMirror editor view not found. Open the target .tex file in Overleaf first.');
+      }
+      const view = findCodeMirrorViewInPage();
+      const text = view.state.doc.toString();
+      const changes = edits.map((edit) => {
+        const first = text.indexOf(edit.expectedText);
+        if (first < 0) throw new Error('expected_text_not_found');
+        const second = text.indexOf(edit.expectedText, first + edit.expectedText.length);
+        if (second >= 0) throw new Error('expected_text_not_unique');
+
+        let prefixLength = 0;
+        const prefixLimit = Math.min(edit.expectedText.length, edit.replacementText.length);
+        while (
+          prefixLength < prefixLimit
+          && edit.expectedText.charCodeAt(prefixLength) === edit.replacementText.charCodeAt(prefixLength)
+        ) {
+          prefixLength += 1;
+        }
+        let suffixLength = 0;
+        const suffixLimit = Math.min(
+          edit.expectedText.length - prefixLength,
+          edit.replacementText.length - prefixLength,
+        );
+        while (
+          suffixLength < suffixLimit
+          && edit.expectedText.charCodeAt(edit.expectedText.length - suffixLength - 1)
+            === edit.replacementText.charCodeAt(edit.replacementText.length - suffixLength - 1)
+        ) {
+          suffixLength += 1;
+        }
+
+        return {
+          matchFrom: first,
+          matchTo: first + edit.expectedText.length,
+          from: first + prefixLength,
+          to: first + edit.expectedText.length - suffixLength,
+          insert: edit.replacementText.slice(
+            prefixLength,
+            edit.replacementText.length - suffixLength,
+          ),
+        };
+      }).sort((a, b) => a.matchFrom - b.matchFrom);
+
+      for (let index = 1; index < changes.length; index += 1) {
+        if (changes[index - 1].matchTo > changes[index].matchFrom) {
+          throw new Error('overlapping_edits');
+        }
+      }
+      view.dispatch({
+        changes: changes.map(({ from, to, insert }) => ({ from, to, insert })),
+      });
+    }, input.edits);
 
     const after = await this.readOpenEditorText(input.projectUrl);
     return {
       ok: true,
       dryRun: false,
-      plan,
-      verification: {
-        replacementPresent: after.includes(input.replacementText),
-        expectedStillPresent: after.includes(input.expectedText),
-      },
+      plans,
+      verification: input.edits.map((edit) => ({
+        replacementPresent: edit.replacementText.length > 0
+          ? after.includes(edit.replacementText)
+          : !after.includes(edit.expectedText),
+        expectedStillPresent: after.includes(edit.expectedText),
+      })),
+      trackedSignal: await page.locator('.ol-cm-change, .review-panel-entry-change').count() > 0,
     };
   }
 }
 
-function findCodeMirrorView(): any {
-  const candidates: Element[] = [];
-  for (const selector of ['.cm-editor', '.cm-content', '[class*="cm-editor"]']) {
-    for (const element of document.querySelectorAll(selector)) candidates.push(element);
+export function browserProfileDirectory(): string {
+  if (process.env.OVERLEAF_BROWSER_PROFILE) {
+    return path.resolve(process.env.OVERLEAF_BROWSER_PROFILE);
   }
-
-  function maybeView(value: any): any {
-    if (!value || typeof value !== 'object') return null;
-    if (value.state?.doc && typeof value.dispatch === 'function') return value;
-    if (value.view?.state?.doc && typeof value.view.dispatch === 'function') return value.view;
-    return null;
+  if (process.platform === 'win32') {
+    return path.join(
+      process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+      'OverleafTrackedChangesMCP',
+      'browser-profile',
+    );
   }
-
-  for (const element of candidates) {
-    let current: Element | null = element;
-    while (current) {
-      for (const key of Object.keys(current as any)) {
-        const view = maybeView((current as any)[key]);
-        if (view) return view;
-      }
-      current = current.parentElement;
-    }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'OverleafTrackedChangesMCP', 'browser-profile');
   }
-
-  throw new Error('CodeMirror editor view not found. Open the target .tex file in Overleaf first.');
-}
-
-function readEditorTextInPage(): string {
-  const view = findCodeMirrorView();
-  return view.state.doc.toString();
-}
-
-function replaceExactOnceInPage(args: { expectedText: string; replacementText: string }): void {
-  const view = findCodeMirrorView();
-  const text = view.state.doc.toString();
-  const first = text.indexOf(args.expectedText);
-  if (first < 0) throw new Error('expected_text_not_found');
-  const second = text.indexOf(args.expectedText, first + args.expectedText.length);
-  if (second >= 0) throw new Error('expected_text_not_unique');
-  view.dispatch({
-    changes: {
-      from: first,
-      to: first + args.expectedText.length,
-      insert: args.replacementText,
-    },
-  });
+  return path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+    'overleaf-tracked-changes-mcp',
+    'browser-profile',
+  );
 }

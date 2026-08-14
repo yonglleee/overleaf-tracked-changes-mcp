@@ -6,6 +6,7 @@ test('selectOpenFileName ignores selected navigation tabs', () => {
 });
 test('selectOpenFileName extracts supported editor file labels', () => {
     assert.equal(selectOpenFileName(['description\nFile tree', 'manuscript.tex\nClose']), 'manuscript.tex');
+    assert.equal(selectOpenFileName(['\u200emanuscript.tex']), 'manuscript.tex');
     assert.equal(selectOpenFileName(['sections/related-work.tex Close']), 'related-work.tex');
     assert.equal(selectOpenFileName(['sections\\appendix.bbl Close']), 'appendix.bbl');
     assert.equal(selectOpenFileName(['references.bib']), 'references.bib');

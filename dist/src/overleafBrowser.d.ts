@@ -31,6 +31,28 @@ export interface DownloadProjectSnapshotInput {
 export interface DownloadProjectSnapshotOutput extends ProjectSnapshotOutput {
     projectId: string;
 }
+export interface UploadProjectFileInput {
+    buffer: Buffer;
+    remotePath: string;
+    remoteFolder: string;
+    fileName: string;
+    mimeType: string;
+    overwrite?: boolean;
+    projectUrl?: string;
+    timeoutMs?: number;
+}
+export interface UploadProjectFileOutput {
+    ok: boolean;
+    dryRun: false;
+    blocked?: boolean;
+    reason?: string;
+    action?: 'created' | 'overwritten';
+    remotePath: string;
+    folderId: string | null;
+    responseStatus?: number;
+    responseBody?: unknown;
+    treeUpdated?: boolean;
+}
 export interface ReplaceTrackedInput {
     expectedText: string;
     replacementText: string;
@@ -93,6 +115,7 @@ export declare class OverleafBrowserClient {
     private context?;
     private page?;
     private managedBrowser;
+    private connectionMode;
     close(): Promise<void>;
     connect(projectUrl?: string): Promise<Page>;
     openLogin(): Promise<Page>;
@@ -114,6 +137,9 @@ export declare class OverleafBrowserClient {
     prepareProjectFile(input: OpenProjectFileInput): Promise<PreparedProjectFile>;
     openProjectFile(input: OpenProjectFileInput): Promise<OverleafStatus>;
     downloadProjectSnapshot(input: DownloadProjectSnapshotInput): Promise<DownloadProjectSnapshotOutput>;
+    private directFileTreeEntries;
+    private resolveUploadFolder;
+    uploadProjectFile(input: UploadProjectFileInput): Promise<UploadProjectFileOutput>;
     replaceTextTracked(input: ReplaceTrackedInput): Promise<ReplaceTrackedOutput>;
     replaceTextsTracked(input: ReplaceTrackedBatchInput): Promise<ReplaceTrackedBatchOutput>;
 }

@@ -9,6 +9,7 @@ Download a complete Overleaf project for local AI-assisted drafting, then replay
 - persistent Overleaf login in a dedicated Chrome profile;
 - visible project browser with automatic relaunch after Chrome is closed;
 - complete read-only project snapshots downloaded to new local directories;
+- explicit dry-run-first upload for new or replaced binary assets such as figures and PDFs;
 - automatic baseline-to-working-copy diff planning for local edits;
 - local project tree, file reading, and search tools;
 - remote file opening and Reviewing-mode setup;
@@ -111,26 +112,34 @@ Snapshots are for reading, baselines, and local drafting. Do not send the comple
 1. Download a complete remote snapshot.
 2. Keep the snapshot unchanged as the baseline and make a separate working copy.
 3. Open the working copy as the Codex workspace and edit `.tex`, `.bib`, and related text files locally. This is faster than browser keystroke automation.
-4. Ask the agent to `sync manuscript.tex`. The Skill interprets sync as:
-   - call `list_local_changes` when the changed files are not already known;
-   - compare the baseline file with both the local working file and the current Overleaf file;
+4. Keep local document preflight independent of Overleaf. Inspect the local diff, line anchors, and document compilation or rendering before contacting the browser. Do not compare baseline and working files again after every local paragraph edit.
+   - call `preflight_local_document` first for a local-only document check;
+   - reuse the returned cached plan while the baseline and working file metadata are unchanged;
+5. Ask the agent to `sync manuscript.tex`. The Skill interprets sync as:
+   - call `list_local_changes` once when the changed files are not already known;
+   - build or reuse a cached local plan for each modified existing text file;
+   - compare the baseline file with both the local working file and the current Overleaf file at sync time;
    - rebase non-conflicting local changes onto the current remote text;
-   - open the matching Overleaf file and verify Reviewing;
+   - open the matching Overleaf file, identify the active visible editor, and verify Reviewing;
    - run `sync_local_file_tracked` with `dry_run: true`;
    - apply only after the plan is confirmed.
-5. The agent may explicitly open the target remote file first:
+6. The agent may explicitly open the target remote file first:
 
    ```bash
    overleaf-tracked-changes-mcp open-file manuscript.tex
    ```
 
-6. Re-read the editor and confirm Overleaf shows suggestions attributed to the intended account.
+7. Re-read the editor and confirm Overleaf shows suggestions attributed to the intended account.
 
-Before every sync, the MCP reads the live Overleaf file. It does not replace the original baseline. The baseline preserves local intent while the live file supplies the current collaboration state.
+At sync time, the MCP reads the live Overleaf file. It does not replace the original baseline. The baseline preserves local intent while the live file supplies the current collaboration state.
 
-`sync_local_file_tracked` prepares the target editor, checks Reviewing, and reads the live file in one browser pass. Agents should call this combined tool directly instead of separately calling status, open-file, Reviewing, and read tools before every sync. Newly generated LaTeX build artifacts such as `.aux`, `.log`, `.fls`, and `.synctex.gz` are reported as ignored rather than manuscript changes. A `.bbl` already present in the baseline remains trackable for submission workflows.
+`sync_local_file_tracked` prepares the target editor, checks Reviewing, selects the active visible CodeMirror editor, and reads the live file in one browser pass. Agents should call this combined tool directly instead of separately calling status, open-file, Reviewing, and read tools before every sync. Newly generated LaTeX build artifacts such as `.aux`, `.log`, `.fls`, and `.synctex.gz` are reported as ignored rather than manuscript changes. A `.bbl` already present in the baseline remains trackable for submission workflows.
+
+Local document preflight and remote browser preflight are independent. A locked persistent Chrome profile or a hung status call must not prevent local validation. When an existing `OVERLEAF_BROWSER_CDP` or the default `http://127.0.0.1:9222` already exposes an Overleaf tab, the MCP reuses that endpoint instead of starting another persistent Chrome. If remote editor identity remains ambiguous after one fallback attempt, the MCP stops before writing rather than selecting the first CodeMirror instance.
 
 Here, **sync** means replaying verified text hunks through Overleaf Reviewing. It never means uploading the working file. New files, deleted files, and binary files are not propagated by local tracked sync.
+
+Binary assets use the separate `upload_overleaf_file` tool. It defaults to a local-only dry-run, rejects tracked text formats, creates a missing remote asset, and requires `overwrite: true` before replacing an existing file. Unchanged dry-run metadata is cached in the MCP process, and the confirmed upload reads the asset once before sending it. This is a single-file operation, never a whole-project push.
 
 ### Multi-author behavior
 
@@ -161,10 +170,12 @@ The local working copy may contain the complete project, but it is never uploade
 
 - `get_overleaf_status`: report browser, login, project, open file, and Reviewing state.
 - `download_project_snapshot`: download and extract the complete project into a new local snapshot.
+- `upload_overleaf_file`: dry-run or upload one non-text asset with cached preflight metadata and a single formal file read; same-name replacement requires explicit `overwrite: true`.
 - `open_overleaf_file`: open a file visible in the expanded Overleaf file tree.
 - `ensure_reviewing`: switch the open editor from Editing to Reviewing and verify it.
 - `list_local_changes`: identify modified, added, deleted, unsupported, and ignored LaTeX build artifacts across baseline and working trees.
-- `plan_local_file_changes`: compare one baseline file with its local working copy without accessing Overleaf.
+- `plan_local_file_changes`: create or reuse a cached plan for one baseline file and local working copy without accessing Overleaf.
+- `preflight_local_document`: perform local-only path, diff, LaTeX structure, and optional temporary-output compilation checks before browser access.
 - `sync_local_file_tracked`: three-way rebase one local file against current Overleaf, then dry-run or replay safe hunks as suggestions; partial conflict-free application is explicit opt-in.
 - `read_project_tree`: inspect a local snapshot or working tree.
 - `read_local_file`: read one local project file.
@@ -205,11 +216,19 @@ node dist/src/index.js --help
 
 - Test tracked writes on a disposable project first.
 - A snapshot is a point-in-time download, not live bidirectional synchronization.
-- Local tracked sync supports existing text files; it does not create or delete remote files.
+- Local tracked sync supports existing text files; it does not create or delete remote files. Binary creation and replacement are isolated in `upload_overleaf_file`.
 - Nested files must currently be visible in the expanded Overleaf tree before `open_overleaf_file` can select them.
 - Reviewing detection and CodeMirror access depend on Overleaf's current web UI.
 - The server does not accept or reject suggestions and does not yet add comments.
 - Never commit or share the managed browser profile.
+
+## Version 0.5.0
+
+- Adds dry-run-first single-file upload for binary assets with explicit overwrite approval.
+- Caches unchanged upload preflight results, reads formal uploads once, and shortens post-upload tree confirmation.
+- Adds cached local change plans and local-only document preflight.
+- Reuses reachable Overleaf CDP sessions and bounds advisory status checks.
+- Selects the active visible CodeMirror editor and blocks ambiguous editor identity.
 
 ## Version 0.4.1
 

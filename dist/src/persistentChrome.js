@@ -43,6 +43,25 @@ async function cdpReady(cdpUrl) {
         return false;
     }
 }
+export async function findReachableOverleafCdp(cdpUrl = 'http://127.0.0.1:9222') {
+    try {
+        const ready = await cdpReady(cdpUrl);
+        if (!ready)
+            return null;
+        const response = await fetch(new URL('/json/list', cdpUrl), {
+            signal: AbortSignal.timeout(1000),
+        });
+        if (!response.ok)
+            return null;
+        const targets = await response.json();
+        return targets.some((target) => (target.type === 'page'
+            && typeof target.url === 'string'
+            && target.url.includes('overleaf.com'))) ? cdpUrl : null;
+    }
+    catch {
+        return null;
+    }
+}
 async function openCdpTab(cdpUrl, startUrl) {
     const endpoint = new URL('/json/new', cdpUrl);
     endpoint.search = startUrl;

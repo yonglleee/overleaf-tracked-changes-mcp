@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { fingerprintLocalFile, readLocalFile, readProjectTree, resolveLocalRoot, searchProject, type LocalFileFingerprint } from './localProject.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -10,9 +12,11 @@ import {
   listLocalChanges,
   planCollaborativeFileChanges,
   planLocalFileChanges,
+  type LocalFileChangePlan,
 } from './localDiff.js';
-import { readLocalFile, readProjectTree, resolveLocalRoot, searchProject } from './localProject.js';
 import { browserProfileDirectory, OverleafBrowserClient } from './overleafBrowser.js';
+import { preflightLocalDocument } from './documentPreflight.js';
+import { prepareUploadFile } from './fileUpload.js';
 import {
   defaultCdpUrl,
   defaultPersistentProfileDirectory,
@@ -20,7 +24,7 @@ import {
 } from './persistentChrome.js';
 
 const browserClient = new OverleafBrowserClient();
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 
 const tools: Tool[] = [
   {
@@ -45,6 +49,24 @@ const tools: Tool[] = [
         snapshot_name: { type: 'string', description: 'Optional new folder name. Defaults to a timestamped name.' },
         max_archive_bytes: { type: 'number', default: 262144000 },
         max_extracted_bytes: { type: 'number', default: 1073741824 },
+      },
+    },
+  },
+  {
+    name: 'upload_overleaf_file',
+    description: 'Create or explicitly overwrite one non-text asset in Overleaf. Defaults to local-only dry-run; tracked text files are rejected.',
+    inputSchema: {
+      type: 'object',
+      required: ['local_path'],
+      properties: {
+        local_root: { type: 'string', description: 'Local root containing the upload file. Defaults to OVERLEAF_MCP_LOCAL_ROOT or cwd.' },
+        local_path: { type: 'string', description: 'File path relative to local_root.' },
+        remote_path: { type: 'string', description: 'Destination path in Overleaf. Defaults to the local base name.' },
+        project_url: { type: 'string' },
+        dry_run: { type: 'boolean', default: true },
+        overwrite: { type: 'boolean', default: false, description: 'Required to replace an existing remote file with the same name.' },
+        max_bytes: { type: 'number', default: 104857600 },
+        timeout_ms: { type: 'number', default: 120000 },
       },
     },
   },
@@ -87,7 +109,7 @@ const tools: Tool[] = [
   },
   {
     name: 'plan_local_file_changes',
-    description: 'Compare one immutable baseline file with its local working copy and create small unique anchored hunks. This does not access Overleaf.',
+    description: 'Create or reuse a cached local plan for one baseline/working file. A changed working file refreshes only the working read; this does not access Overleaf.',
     inputSchema: {
       type: 'object',
       required: ['baseline_root', 'working_root', 'path'],
@@ -95,6 +117,26 @@ const tools: Tool[] = [
         baseline_root: { type: 'string' },
         working_root: { type: 'string' },
         path: { type: 'string' },
+        context_lines: { type: 'number', default: 3 },
+        max_context_lines: { type: 'number', default: 20 },
+        max_edits: { type: 'number', default: 40 },
+        max_bytes: { type: 'number', default: 2000000 },
+      },
+    },
+  },
+  {
+    name: 'preflight_local_document',
+    description: 'Run local-only document preflight before any browser connection: validate paths, inspect the local plan, check LaTeX structure, and compile to a temporary output directory when a TeX engine is available.',
+    inputSchema: {
+      type: 'object',
+      required: ['baseline_root', 'working_root', 'path'],
+      properties: {
+        baseline_root: { type: 'string' },
+        working_root: { type: 'string' },
+        path: { type: 'string' },
+        compile: { type: 'boolean', default: true },
+        compile_path: { type: 'string', description: 'Optional main .tex path relative to working_root.' },
+        compile_timeout_ms: { type: 'number', default: 90000 },
         context_lines: { type: 'number', default: 3 },
         max_context_lines: { type: 'number', default: 20 },
         max_edits: { type: 'number', default: 40 },
@@ -121,6 +163,8 @@ const tools: Tool[] = [
         dry_run: { type: 'boolean', default: true },
         require_reviewing: { type: 'boolean', default: true },
         allow_partial: { type: 'boolean', default: false, description: 'Apply non-conflicting hunks even when other hunks conflict. Conflicts are always reported.' },
+        local_preflight: { type: 'boolean', default: true, description: 'Run the local document preflight before connecting to Overleaf.' },
+        compile_local_document: { type: 'boolean', default: false, description: 'Compile a .tex target to a temporary directory during local preflight.' },
       },
     },
   },
@@ -232,25 +276,143 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
-async function planLocalFileFromArgs(args: Record<string, unknown>) {
+interface LocalFilePlanResult {
+  filePath: string;
+  baselineRoot: string;
+  workingRoot: string;
+  plan: LocalFileChangePlan;
+  cacheStatus: 'hit' | 'working_refresh' | 'baseline_refresh' | 'miss';
+}
+
+interface LocalFilePlanWithTexts extends LocalFilePlanResult {
+  baselineText: string;
+  workingText: string;
+}
+
+interface CachedLocalPlan {
+  baselineFingerprint: LocalFileFingerprint;
+  workingFingerprint: LocalFileFingerprint;
+  baselineText: string;
+  workingText: string;
+  result: LocalFilePlanResult;
+}
+
+const localPlanCache = new Map<string, CachedLocalPlan>();
+const localPreflightCache = new Map<string, Awaited<ReturnType<typeof preflightLocalDocument>>>();
+
+function sameFingerprint(left: LocalFileFingerprint, right: LocalFileFingerprint): boolean {
+  return left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ino === right.ino;
+}
+
+async function planLocalFileFromArgs(
+  args: Record<string, unknown>,
+): Promise<LocalFilePlanResult>;
+async function planLocalFileFromArgs(
+  args: Record<string, unknown>,
+  includeTexts: true,
+): Promise<LocalFilePlanWithTexts>;
+async function planLocalFileFromArgs(
+  args: Record<string, unknown>,
+  includeTexts = false,
+): Promise<LocalFilePlanResult | LocalFilePlanWithTexts> {
   const baselineRoot = resolveLocalRoot(String(args.baseline_root));
   const workingRoot = resolveLocalRoot(String(args.working_root));
   const filePath = String(args.path);
   const maxBytes = Number(args.max_bytes || 2_000_000);
-  const [baseline, working] = await Promise.all([
-    readLocalFile(baselineRoot, filePath, maxBytes),
-    readLocalFile(workingRoot, filePath, maxBytes),
+  const contextLines = Number(args.context_lines || 3);
+  const maxContextLines = Number(args.max_context_lines || 20);
+  const maxEdits = Number(args.max_edits || 40);
+  if (path.resolve(baselineRoot) === path.resolve(workingRoot)) {
+    throw new Error('baseline_root and working_root must be separate directories.');
+  }
+  const cacheKey = JSON.stringify([
+    baselineRoot,
+    workingRoot,
+    filePath,
+    maxBytes,
+    contextLines,
+    maxContextLines,
+    maxEdits,
   ]);
-  return {
+  const cached = localPlanCache.get(cacheKey);
+  const [baselineFingerprint, workingFingerprint] = await Promise.all([
+    fingerprintLocalFile(baselineRoot, filePath),
+    fingerprintLocalFile(workingRoot, filePath),
+  ]);
+  if (cached && sameFingerprint(cached.baselineFingerprint, baselineFingerprint)
+    && sameFingerprint(cached.workingFingerprint, workingFingerprint)) {
+    return includeTexts
+      ? { ...cached.result, baselineText: cached.baselineText, workingText: cached.workingText, cacheStatus: 'hit' }
+      : { ...cached.result, cacheStatus: 'hit' };
+  }
+  const baseline = cached && sameFingerprint(cached.baselineFingerprint, baselineFingerprint)
+    ? cached.baselineText
+    : await readLocalFile(baselineRoot, filePath, maxBytes);
+  const working = cached && sameFingerprint(cached.baselineFingerprint, baselineFingerprint)
+    && sameFingerprint(cached.workingFingerprint, workingFingerprint)
+    ? cached.workingText
+    : await readLocalFile(workingRoot, filePath, maxBytes);
+  const cacheStatus = cached && sameFingerprint(cached.baselineFingerprint, baselineFingerprint)
+    ? 'working_refresh' as const
+    : cached
+      ? 'baseline_refresh' as const
+      : 'miss' as const;
+  const result = {
     filePath,
     baselineRoot,
     workingRoot,
+    cacheStatus,
     plan: planLocalFileChanges(baseline, working, {
-      contextLines: Number(args.context_lines || 3),
-      maxContextLines: Number(args.max_context_lines || 20),
-      maxEdits: Number(args.max_edits || 40),
+      contextLines,
+      maxContextLines,
+      maxEdits,
     }),
   };
+  localPlanCache.set(cacheKey, {
+    baselineFingerprint,
+    workingFingerprint,
+    baselineText: baseline,
+    workingText: working,
+    result,
+  });
+  return includeTexts ? { ...result, baselineText: baseline, workingText: working } : result;
+}
+
+async function preflightLocalFile(
+  args: Record<string, unknown>,
+  local: LocalFilePlanWithTexts,
+  defaultCompile = false,
+) {
+  const compile = 'compile_local_document' in args
+    ? args.compile_local_document === true
+    : ('compile' in args ? args.compile === true : defaultCompile);
+  const compilePath = args.compile_path ? String(args.compile_path) : undefined;
+  const compileTimeoutMs = Number(args.compile_timeout_ms || 90_000);
+  const key = JSON.stringify([
+    local.baselineRoot,
+    local.workingRoot,
+    local.filePath,
+    compile,
+    compilePath || '',
+    compileTimeoutMs,
+  ]);
+  let result = local.cacheStatus === 'hit' ? localPreflightCache.get(key) : undefined;
+  if (!result) {
+    result = await preflightLocalDocument({
+      baselineRoot: local.baselineRoot,
+      workingRoot: local.workingRoot,
+      filePath: local.filePath,
+      workingText: local.workingText,
+      localPlan: local.plan,
+      compile,
+      compilePath,
+      compileTimeoutMs,
+    });
+    localPreflightCache.set(key, result);
+  }
+  return { result, cacheStatus: local.cacheStatus };
 }
 
 const server = new Server(
@@ -287,8 +449,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'plan_local_file_changes': {
       return textResult(await planLocalFileFromArgs(args));
     }
+    case 'preflight_local_document': {
+      const local = await planLocalFileFromArgs(args, true);
+      const { result: preflight } = await preflightLocalFile(args, local, true);
+      return textResult({
+        ...preflight,
+        cacheStatus: local.cacheStatus,
+      });
+    }
     case 'sync_local_file_tracked': {
-      const local = await planLocalFileFromArgs(args);
+      const local = await planLocalFileFromArgs(args, true);
+      const localPreflight = args.local_preflight !== false
+        ? await preflightLocalFile(args, local)
+        : null;
+      if (localPreflight && !localPreflight.result.ok) {
+        return textResult({
+          ok: false,
+          complete: false,
+          blocked: true,
+          reason: 'local_document_preflight_failed',
+          dryRun: args.dry_run !== false,
+          filePath: local.filePath,
+          localPlan: local.plan,
+          localPreflight: localPreflight.result,
+          cacheStatus: local.cacheStatus,
+        });
+      }
       if (!local.plan.changed) {
         return textResult({
           ok: true,
@@ -296,6 +482,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           dryRun: args.dry_run !== false,
           filePath: local.filePath,
           localPlan: local.plan,
+          cacheStatus: local.cacheStatus,
+          localPreflight: localPreflight?.result || null,
           collaborativePlan: null,
           remote: null,
         });
@@ -309,13 +497,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       const remoteStatus = prepared.status;
       const remoteText = prepared.text;
-      const [baselineText, workingText] = await Promise.all([
-        readLocalFile(local.baselineRoot, local.filePath, Number(args.max_bytes || 2_000_000)),
-        readLocalFile(local.workingRoot, local.filePath, Number(args.max_bytes || 2_000_000)),
-      ]);
       const collaborativePlan = planCollaborativeFileChanges(
-        baselineText,
-        workingText,
+        local.baselineText,
+        local.workingText,
         remoteText,
         {
           maxContextLines: Number(args.max_context_lines || 20),
@@ -341,6 +525,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           allowPartial,
           filePath: local.filePath,
           localPlan: local.plan,
+          cacheStatus: local.cacheStatus,
+          localPreflight: localPreflight?.result || null,
           collaborativePlan,
           remoteStatus,
           remote: null,
@@ -363,6 +549,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         allowPartial,
         filePath: local.filePath,
         localPlan: local.plan,
+        cacheStatus: local.cacheStatus,
+        localPreflight: localPreflight?.result || null,
         collaborativePlan,
         remoteStatus,
         remote,
@@ -379,6 +567,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         maxArchiveBytes: Number(args.max_archive_bytes || 262_144_000),
         maxExtractedBytes: Number(args.max_extracted_bytes || 1_073_741_824),
       }));
+    }
+    case 'upload_overleaf_file': {
+      const localRoot = resolveLocalRoot(args.local_root ? String(args.local_root) : undefined);
+      const dryRun = args.dry_run !== false;
+      const prepared = await prepareUploadFile({
+        localRoot,
+        localPath: String(args.local_path),
+        remotePath: args.remote_path ? String(args.remote_path) : undefined,
+        maxBytes: Number(args.max_bytes || 104_857_600),
+        includeBuffer: !dryRun,
+      });
+      const { plan, cacheStatus } = prepared;
+      if (dryRun) {
+        return textResult({
+          ok: true,
+          dryRun: true,
+          overwrite: args.overwrite === true,
+          remoteCheck: 'pending',
+          cacheStatus,
+          plan,
+        });
+      }
+      return textResult({
+        cacheStatus,
+        plan,
+        remote: await browserClient.uploadProjectFile({
+          ...plan,
+          buffer: prepared.buffer!,
+          projectUrl: args.project_url as string | undefined,
+          overwrite: args.overwrite === true,
+          timeoutMs: Number(args.timeout_ms || 120_000),
+        }),
+      });
     }
     case 'open_overleaf_file': {
       return textResult(await browserClient.openProjectFile({

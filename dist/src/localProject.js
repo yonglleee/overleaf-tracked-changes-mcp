@@ -57,6 +57,16 @@ export function resolveInsideRoot(root, relativePath) {
     }
     return resolved;
 }
+export async function fingerprintLocalFile(root, relativePath) {
+    const stat = await fs.stat(resolveInsideRoot(root, relativePath));
+    if (!stat.isFile())
+        throw new Error(`Not a file: ${relativePath}`);
+    return {
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ino: typeof stat.ino === 'number' ? stat.ino : null,
+    };
+}
 export async function readLocalFile(root, relativePath, maxBytes = 200_000) {
     const filePath = resolveInsideRoot(root, relativePath);
     const stat = await fs.stat(filePath);

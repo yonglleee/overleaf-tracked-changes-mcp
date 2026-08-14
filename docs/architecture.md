@@ -27,6 +27,10 @@ The write path is:
 7. Dispatch up to 40 independent changes in one transaction.
 8. Compare tracked-change DOM snapshots from immediately before and after dispatch, then read the document back and verify every replacement.
 
+## Explicit binary asset upload
+
+`upload_overleaf_file` is separate from tracked text sync. Its dry-run validates the local path, size, destination, MIME type, and SHA-256 without browser access. The MCP process caches this metadata against the resolved path, destination, size limit, file size, modification time, and inode. A confirmed upload revalidates the fingerprint, reads the file once, and passes that same buffer to the authenticated multipart request. A successful HTTP response is authoritative; the live file tree is checked for up to 1.5 seconds and may report `treeUpdated: false` when UI refresh lags. Existing files are blocked unless `overwrite: true`; folder conflicts and tracked text formats are always blocked. The tool does not upload directories or delete files.
+
 ## Browser surfaces
 
 The MCP browser and the Codex in-app browser are separate sessions. The recommended desktop path is one visible Chrome process with a stable user-data directory and fixed local CDP endpoint. `browser` starts or reuses that Chrome; MCP commands connect without owning or closing it. Login persistence belongs to the profile directory, not the port. The managed-profile launcher remains a fallback when `OVERLEAF_BROWSER_CDP` is not configured.
@@ -45,7 +49,7 @@ Safe local-to-Overleaf revision uses a live three-way rebase:
 
 The immutable baseline records local intent; it is not replaced before sync. The live remote editor supplies current collaboration state. Automatic baseline refresh is intentionally avoided while tracked suggestions are pending because later acceptance or rejection can change the authoritative text.
 
-`list_local_changes` inventories the baseline and working trees without touching Overleaf. Generated LaTeX build outputs are ignored; a `.bbl` that already belongs to the baseline remains trackable. `plan_local_file_changes` creates local-only hunks for one existing text file. `sync_local_file_tracked` composes one prepared-editor pass, the live three-way plan, remote file selection, Reviewing verification, conflict policy, and tracked batch dispatcher. File creation, file deletion, and binary synchronization are deliberately excluded.
+`list_local_changes` inventories the baseline and working trees without touching Overleaf. Generated LaTeX build outputs are ignored; a `.bbl` that already belongs to the baseline remains trackable. `plan_local_file_changes` creates local-only hunks for one existing text file. `sync_local_file_tracked` composes one prepared-editor pass, the live three-way plan, remote file selection, Reviewing verification, conflict policy, and tracked batch dispatcher. File deletion and binary synchronization remain excluded from tracked sync; one-file binary creation and replacement use the separate explicit upload path.
 
 ## Current limitations
 

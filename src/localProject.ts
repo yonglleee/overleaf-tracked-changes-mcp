@@ -77,6 +77,25 @@ export function resolveInsideRoot(root: string, relativePath: string): string {
   return resolved;
 }
 
+export interface LocalFileFingerprint {
+  size: number;
+  mtimeMs: number;
+  ino: number | null;
+}
+
+export async function fingerprintLocalFile(
+  root: string,
+  relativePath: string,
+): Promise<LocalFileFingerprint> {
+  const stat = await fs.stat(resolveInsideRoot(root, relativePath));
+  if (!stat.isFile()) throw new Error(`Not a file: ${relativePath}`);
+  return {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ino: typeof stat.ino === 'number' ? stat.ino : null,
+  };
+}
+
 export async function readLocalFile(root: string, relativePath: string, maxBytes = 200_000): Promise<string> {
   const filePath = resolveInsideRoot(root, relativePath);
   const stat = await fs.stat(filePath);
